@@ -1,0 +1,25 @@
+{
+  "name": "jeeves",
+  "owner": {
+    "name": "Jeeves",
+    "email": "support@trustjeeves.com"
+  },
+  "metadata": {
+    "description": "Your AI doesn't remember. Jeeves does. Session memory and living documentation for Claude Code.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "jeeves",
+      "source": ".",
+      "description": "Session memory and living docs — 15 modes for brainstorming, code documentation, quality hardening, and drift detection. Your AI doesn't remember. Jeeves does.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jeeves"
+      },
+      "homepage": "https://trustjeeves.com",
+      "keywords": ["documentation", "knowledge-base", "session-memory", "brainstorm", "decisions", "living-docs"],
+      "category": "development-workflows"
+    }
+  ]
+}
