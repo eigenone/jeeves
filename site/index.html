@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jeeves — Your AI doesn't remember. Jeeves does.</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; }
+    .container { max-width: 480px; width: 100%; }
+    h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 0.5rem; color: #fff; }
+    .tagline { font-size: 1.1rem; color: #888; margin-bottom: 2.5rem; }
+    .card { background: #16161f; border: 1px solid #2a2a3a; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.1rem; margin-bottom: 1rem; color: #fff; }
+    label { display: block; font-size: 0.85rem; color: #888; margin-bottom: 0.4rem; }
+    input[type="email"] { width: 100%; padding: 0.75rem 1rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #fff; font-size: 1rem; outline: none; transition: border-color 0.2s; }
+    input[type="email"]:focus { border-color: #4a6cf7; }
+    .persona-row { display: flex; gap: 0.75rem; margin: 1rem 0 1.5rem; }
+    .persona-btn { flex: 1; padding: 0.75rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #888; font-size: 0.9rem; cursor: pointer; text-align: center; transition: all 0.2s; }
+    .persona-btn:hover { border-color: #4a6cf7; color: #fff; }
+    .persona-btn.selected { border-color: #4a6cf7; background: #1a1a3a; color: #fff; }
+    .persona-label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .persona-desc { font-size: 0.75rem; color: #666; }
+    button.submit { width: 100%; padding: 0.85rem; background: #4a6cf7; color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button.submit:hover { background: #3a5ce7; }
+    button.submit:disabled { background: #333; cursor: not-allowed; }
+    .result { display: none; }
+    .result.show { display: block; }
+    .key-display { background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; padding: 1rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; word-break: break-all; color: #4a6cf7; margin: 1rem 0; position: relative; }
+    .copy-btn { position: absolute; top: 0.5rem; right: 0.5rem; padding: 0.3rem 0.6rem; background: #2a2a3a; border: none; border-radius: 4px; color: #888; font-size: 0.75rem; cursor: pointer; }
+    .copy-btn:hover { color: #fff; }
+    .steps { margin-top: 1.5rem; }
+    .steps h3 { font-size: 0.95rem; margin-bottom: 0.75rem; color: #fff; }
+    .step { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .step-num { width: 24px; height: 24px; background: #4a6cf7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
+    .step-text { font-size: 0.85rem; color: #aaa; line-height: 1.5; }
+    code { background: #1a1a2a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8rem; color: #e0e0e0; }
+    .error { color: #f44; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+    .error.show { display: block; }
+    .footer { margin-top: 3rem; color: #444; font-size: 0.8rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Jeeves</h1>
+    <p class="tagline">Your AI doesn't remember. Jeeves does.</p>
+
+    <div class="card" id="signup-card">
+      <h2>Start your 14-day free trial</h2>
+      <label for="email">Email</label>
+      <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
+      <div class="persona-row">
+        <div class="persona-btn selected" data-persona="builder" onclick="selectPersona(this)">
+          <span class="persona-label">Builder</span>
+          <span class="persona-desc">For developers</span>
+        </div>
+        <div class="persona-btn" data-persona="explorer" onclick="selectPersona(this)">
+          <span class="persona-label">Explorer</span>
+          <span class="persona-desc">For everyone else</span>
+        </div>
+      </div>
+      <button class="submit" onclick="signup()">Get API Key</button>
+      <div class="error" id="error"></div>
+    </div>
+
+    <div class="result card" id="result">
+      <h2>You're in!</h2>
+      <p style="color:#888; font-size:0.9rem; margin-bottom:0.5rem;">Your API key:</p>
+      <div class="key-display" id="key-display">
+        <span id="key-text"></span>
+        <button class="copy-btn" onclick="copyKey()">Copy</button>
+      </div>
+
+      <div class="steps">
+        <h3>Setup (one time)</h3>
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open Claude Code and run:<br><code>/plugin marketplace add eigenone/jeeves</code></div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Install the plugin:<br><code>/plugin install jeeves@eigenone-jeeves</code></div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">Activate your key:<br><code>/jeeves:activate <span id="key-inline"></span></code></div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">That's it. Jeeves remembers everything from here.</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="footer">14-day Pro trial. No credit card. Downgrades to free after.</p>
+  </div>
+
+  <script>
+    const API = 'https://jeeves-api.singhal-priyank.workers.dev';
+    let persona = 'builder';
+
+    function selectPersona(el) {
+      document.querySelectorAll('.persona-btn').forEach(b => b.classList.remove('selected'));
+      el.classList.add('selected');
+      persona = el.dataset.persona;
+    }
+
+    async function signup() {
+      const email = document.getElementById('email').value.trim();
+      const errorEl = document.getElementById('error');
+      errorEl.classList.remove('show');
+
+      if (!email || !email.includes('@')) {
+        errorEl.textContent = 'Enter a valid email.';
+        errorEl.classList.add('show');
+        return;
+      }
+
+      const btn = document.querySelector('.submit');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+
+      try {
+        const res = await fetch(`${API}/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, persona }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          errorEl.textContent = data.error;
+          errorEl.classList.add('show');
+          btn.disabled = false;
+          btn.textContent = 'Get API Key';
+          return;
+        }
+
+        document.getElementById('key-text').textContent = data.api_key;
+        document.getElementById('key-inline').textContent = data.api_key;
+        document.getElementById('signup-card').style.display = 'none';
+        document.getElementById('result').classList.add('show');
+      } catch (e) {
+        errorEl.textContent = 'Something went wrong. Try again.';
+        errorEl.classList.add('show');
+        btn.disabled = false;
+        btn.textContent = 'Get API Key';
+      }
+    }
+
+    function copyKey() {
+      const key = document.getElementById('key-text').textContent;
+      navigator.clipboard.writeText(key);
+      document.querySelector('.copy-btn').textContent = 'Copied!';
+      setTimeout(() => document.querySelector('.copy-btn').textContent = 'Copy', 2000);
+    }
+
+    document.getElementById('email').addEventListener('keypress', e => {
+      if (e.key === 'Enter') signup();
+    });
+  </script>
+</body>
+</html>

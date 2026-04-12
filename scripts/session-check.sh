@@ -8,6 +8,20 @@ fi
 touch "$F"
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) session_start project=$(basename "$(pwd)")" >> "${HOME}/.jeeves-usage.log" 2>/dev/null
 
+# Load API key from file or env
+JEEVES_KEY="${JEEVES_KEY:-$(cat ~/.jeeves/key 2>/dev/null)}"
+
+# If no key, nudge signup
+if [ -z "$JEEVES_KEY" ]; then
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Jeeves is installed but not activated. Run /jeeves:activate with your API key, or sign up at trustjeeves.com"}}\n'
+  exit 0
+fi
+
+# Log session start to server (fire and forget)
+curl -s -X POST https://jeeves-api.singhal-priyank.workers.dev/events \
+  -H "Content-Type: application/json" \
+  -d "{\"key\":\"${JEEVES_KEY}\",\"event_type\":\"session_start\"}" > /dev/null 2>&1 &
+
 # Resolve Jeeves script — check project first, then plugin root
 JEEVES_SCRIPT="scripts/jeeves.ts"
 [ -f "$JEEVES_SCRIPT" ] || JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
