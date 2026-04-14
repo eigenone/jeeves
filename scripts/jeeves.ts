@@ -549,11 +549,14 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
     }
 
     if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
+      // 1 changed ref is often a false positive (implementation change that doesn't
+      // affect the doc's claims). 2+ is more likely real drift. Use priority to
+      // distinguish: low = informational, medium = likely real.
       actions.push({
         type: "update",
         target: docRelPath,
         description: `Stale — ${staleRefs.length} referenced file(s) changed since doc was last updated: ${staleRefs.slice(0, 3).join(", ")}`,
-        priority: "medium",
+        priority: staleRefs.length >= 2 ? "medium" : "low",
       });
     }
   }
