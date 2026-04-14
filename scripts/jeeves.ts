@@ -488,9 +488,22 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
     }
   }
 
-  // 4. Stale pattern docs (doc is older than its referenced files)
-  // Generated / build-artifact paths are skipped — their mtimes flip on every
-  // codegen run and produce false positives on hand-written pattern docs.
+  // 4. Stale pattern docs — git-commit-based, not filesystem mtime.
+  //
+  // Old approach used fs.statSync().mtimeMs which produced massive false
+  // positives: git checkout, editor saves, and same-commit updates all
+  // bump mtime without meaning the doc is stale. See Repsy agent feedback
+  // from 2026-04-13 for the full analysis.
+  //
+  // New approach (Option B — commit-grouping):
+  //   1. Get the doc's last commit SHA
+  //   2. Get files changed in that commit
+  //   3. For each referenced file that has commits AFTER the doc's commit,
+  //      check: was it also touched in the same commit as the doc?
+  //   4. If yes → doc is fresh (they were updated together)
+  //   5. If no → doc is genuinely stale
+  //
+  // Generated/build paths are still skipped.
   const IGNORED_STALENESS_PATHS = [
     "/generated/",
     "/dist/",
@@ -504,18 +517,42 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
     IGNORED_STALENESS_PATHS.some(ignored => p.includes(ignored));
 
   for (const [patternFile, refs] of patternFiles) {
-    const docPath = path.join(PATTERNS_DIR, patternFile);
-    const docMtime = fs.statSync(docPath).mtimeMs;
-    const newerFiles = refs.filter(ref => {
-      if (isIgnoredForStaleness(ref)) return false;
-      const fullPath = path.join(ROOT, ref);
-      return exists(fullPath) && fs.statSync(fullPath).mtimeMs > docMtime;
-    });
-    if (newerFiles.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
+    const docRelPath = `docs/internal/patterns/${patternFile}`;
+
+    // Get doc's last commit SHA and the files touched in that commit
+    const docLastSha = run(`git log -1 --format=%H -- "${docRelPath}" 2>/dev/null`);
+    if (!docLastSha) continue; // Not tracked by git — skip
+
+    const docCommitFiles = new Set(
+      (run(`git show --name-only --format="" ${docLastSha} 2>/dev/null`) || "")
+        .split("\n")
+        .filter(Boolean)
+    );
+
+    const staleRefs: string[] = [];
+    for (const ref of refs) {
+      if (isIgnoredForStaleness(ref)) continue;
+      if (!exists(path.join(ROOT, ref))) continue;
+
+      // Was this file modified AFTER the doc's last commit?
+      const refLastSha = run(`git log -1 --format=%H -- "${ref}" 2>/dev/null`);
+      if (!refLastSha || refLastSha === docLastSha) continue; // Same commit or not tracked
+
+      // Check if the ref's latest commit is actually newer than doc's
+      const isNewer = run(`git log --format=%H ${docLastSha}..HEAD -- "${ref}" 2>/dev/null`);
+      if (!isNewer) continue; // Ref wasn't changed after doc's commit
+
+      // Was the ref also touched in the doc's commit? If so, they were updated together → fresh
+      if (docCommitFiles.has(ref)) continue;
+
+      staleRefs.push(ref);
+    }
+
+    if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
       actions.push({
         type: "update",
-        target: `docs/internal/patterns/${patternFile}`,
-        description: `Stale — ${newerFiles.length} referenced file(s) modified after doc: ${newerFiles.slice(0, 3).join(", ")}`,
+        target: docRelPath,
+        description: `Stale — ${staleRefs.length} referenced file(s) changed since doc was last updated: ${staleRefs.slice(0, 3).join(", ")}`,
         priority: "medium",
       });
     }
