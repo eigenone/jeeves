@@ -12,60 +12,57 @@
     .tagline { font-size: 1.1rem; color: #888; margin-bottom: 2.5rem; }
     .card { background: #16161f; border: 1px solid #2a2a3a; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; }
     .card h2 { font-size: 1.1rem; margin-bottom: 1rem; color: #fff; }
-    .card h3 { font-size: 0.95rem; margin: 1.5rem 0 0.75rem; color: #ccc; }
     label { display: block; font-size: 0.85rem; color: #888; margin-bottom: 0.4rem; }
-    input[type="email"], input[type="text"] { width: 100%; padding: 0.75rem 1rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #fff; font-size: 1rem; outline: none; transition: border-color 0.2s; }
+    input[type="email"] { width: 100%; padding: 0.75rem 1rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #fff; font-size: 1rem; outline: none; }
     input:focus { border-color: #4a6cf7; }
-    .persona-row { display: flex; gap: 0.75rem; margin: 1rem 0 1.5rem; }
-    .persona-btn { flex: 1; padding: 0.75rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #888; font-size: 0.9rem; cursor: pointer; text-align: center; transition: all 0.2s; }
-    .persona-btn:hover { border-color: #4a6cf7; color: #fff; }
-    .persona-btn.selected { border-color: #4a6cf7; background: #1a1a3a; color: #fff; }
-    .persona-label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
-    .persona-desc { font-size: 0.75rem; color: #666; }
-    button { padding: 0.75rem 1.5rem; background: #4a6cf7; color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button { padding: 0.75rem 1.5rem; background: #4a6cf7; color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
     button:hover { background: #3a5ce7; }
     button:disabled { background: #333; cursor: not-allowed; }
-    button.secondary { background: #2a2a3a; }
+    button.full { width: 100%; margin-top: 1rem; }
+    button.secondary { background: #2a2a3a; font-size: 0.85rem; padding: 0.5rem 1rem; }
     button.secondary:hover { background: #3a3a4a; }
-    .btn-row { display: flex; gap: 0.75rem; }
-    .key-display { background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; padding: 1rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; word-break: break-all; color: #4a6cf7; margin: 0.75rem 0; position: relative; }
+    .key-box { background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; padding: 1rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; word-break: break-all; color: #4a6cf7; margin: 0.75rem 0; position: relative; }
     .copy-btn { position: absolute; top: 0.5rem; right: 0.5rem; padding: 0.3rem 0.6rem; background: #2a2a3a; border: none; border-radius: 4px; color: #888; font-size: 0.75rem; cursor: pointer; }
     .copy-btn:hover { color: #fff; }
-    .steps { margin-top: 1.5rem; }
-    .steps h3 { font-size: 0.95rem; margin-bottom: 0.75rem; color: #fff; }
-    .step { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
-    .step-num { width: 24px; height: 24px; background: #4a6cf7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
-    .step-text { font-size: 0.85rem; color: #aaa; line-height: 1.5; }
     code { background: #1a1a2a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8rem; color: #e0e0e0; }
-    .error { color: #f44; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
-    .error.show { display: block; }
+    .step { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .step-num { width: 24px; height: 24px; background: #4a6cf7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+    .step-text { font-size: 0.85rem; color: #aaa; line-height: 1.5; }
+    .error { color: #f44; font-size: 0.85rem; margin-top: 0.5rem; }
     .hidden { display: none !important; }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
     .stat { background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; padding: 1rem; }
     .stat-value { font-size: 1.5rem; font-weight: 700; color: #fff; }
     .stat-label { font-size: 0.75rem; color: #666; margin-top: 0.25rem; }
     .progress-bar { height: 6px; background: #2a2a3a; border-radius: 3px; margin-top: 0.5rem; overflow: hidden; }
-    .progress-fill { height: 100%; background: #4a6cf7; border-radius: 3px; transition: width 0.3s; }
+    .progress-fill { height: 100%; background: #4a6cf7; border-radius: 3px; }
     .progress-fill.warning { background: #f7a84a; }
     .progress-fill.danger { background: #f44; }
-    .project-list { margin-top: 1rem; }
     .project { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid #1a1a2a; }
     .project:last-child { border-bottom: none; }
     .project-name { font-weight: 600; font-size: 0.9rem; }
     .project-stats { font-size: 0.75rem; color: #666; }
-    .project-health { font-weight: 700; }
-    .tracking-row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
-    .tracking-btn { padding: 0.4rem 0.8rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 6px; color: #888; font-size: 0.8rem; cursor: pointer; }
-    .tracking-btn.selected { border-color: #4a6cf7; color: #fff; background: #1a1a3a; }
     .skill-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.4rem 0; }
     .skill-name { width: 100px; font-size: 0.8rem; color: #888; text-align: right; }
     .skill-fill { height: 16px; background: #4a6cf7; border-radius: 3px; min-width: 2px; }
     .skill-count { font-size: 0.75rem; color: #666; }
-    .footer { margin-top: 3rem; color: #444; font-size: 0.8rem; text-align: center; }
     .tab-row { display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 1px solid #2a2a3a; }
-    .tab { padding: 0.75rem 1.5rem; color: #666; cursor: pointer; font-size: 0.9rem; border-bottom: 2px solid transparent; transition: all 0.2s; }
+    .tab { padding: 0.75rem 1.25rem; color: #666; cursor: pointer; font-size: 0.9rem; border-bottom: 2px solid transparent; }
     .tab:hover { color: #aaa; }
     .tab.active { color: #fff; border-bottom-color: #4a6cf7; }
+    .persona-row { display: flex; gap: 0.75rem; margin: 0.75rem 0; }
+    .persona-btn { flex: 1; padding: 0.75rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 8px; color: #888; font-size: 0.9rem; cursor: pointer; text-align: center; }
+    .persona-btn.selected { border-color: #4a6cf7; background: #1a1a3a; color: #fff; }
+    .persona-label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .persona-desc { font-size: 0.75rem; color: #666; }
+    .tracking-row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
+    .tracking-btn { padding: 0.4rem 0.8rem; background: #0a0a0f; border: 1px solid #2a2a3a; border-radius: 6px; color: #888; font-size: 0.8rem; cursor: pointer; }
+    .tracking-btn.selected { border-color: #4a6cf7; color: #fff; background: #1a1a3a; }
+    .info { font-size: 0.85rem; color: #888; margin-bottom: 1rem; line-height: 1.5; }
+    .footer { margin-top: 3rem; color: #444; font-size: 0.8rem; text-align: center; }
+    .logout { color: #666; font-size: 0.8rem; cursor: pointer; text-decoration: underline; }
+    .logout:hover { color: #aaa; }
+    .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
   </style>
 </head>
 <body>
@@ -73,74 +70,63 @@
     <h1>Jeeves</h1>
     <p class="tagline">Your AI doesn't remember. Jeeves does.</p>
 
-    <!-- Signup / Login -->
-    <div id="auth-section">
+    <!-- Login -->
+    <div id="login-section">
       <div class="card">
         <h2>Get started</h2>
+        <p class="info">Enter your email. If you already have an account, we'll log you in. If not, we'll create one with a 14-day Pro trial.</p>
         <label for="email">Email</label>
         <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
-        <div class="persona-row">
-          <div class="persona-btn selected" data-persona="builder" onclick="selectPersona(this)">
-            <span class="persona-label">Builder</span>
-            <span class="persona-desc">For developers</span>
-          </div>
-          <div class="persona-btn" data-persona="explorer" onclick="selectPersona(this)">
-            <span class="persona-label">Explorer</span>
-            <span class="persona-desc">For everyone else</span>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button onclick="signup()" style="flex:1">Get API Key</button>
-          <button class="secondary" onclick="login()" style="flex:1">I have a key</button>
-        </div>
-        <div class="error" id="error"></div>
+        <button class="full" onclick="continueWithEmail()">Continue</button>
+        <div class="error hidden" id="error"></div>
       </div>
     </div>
 
     <!-- Dashboard -->
-    <div id="dashboard-section" class="hidden">
-      <div class="tab-row">
-        <div class="tab active" onclick="showTab('overview')">Overview</div>
-        <div class="tab" onclick="showTab('projects')">Projects</div>
-        <div class="tab" onclick="showTab('settings')">Settings</div>
+    <div id="dashboard" class="hidden">
+      <div class="header-row">
+        <span style="color:#888;font-size:0.85rem;" id="user-email"></span>
+        <span class="logout" onclick="logout()">Sign out</span>
       </div>
 
-      <!-- Overview tab -->
-      <div id="tab-overview">
-        <div class="card">
-          <h2>Usage this month</h2>
-          <div class="stat-grid">
-            <div class="stat">
-              <div class="stat-value" id="tokens-used">0</div>
-              <div class="stat-label">tokens used</div>
-            </div>
-            <div class="stat">
-              <div class="stat-value" id="tokens-allowed">500</div>
-              <div class="stat-label">tokens allowed</div>
-            </div>
-          </div>
-          <div class="progress-bar">
-            <div class="progress-fill" id="usage-bar" style="width:0%"></div>
-          </div>
-        </div>
+      <div class="tab-row">
+        <div class="tab active" onclick="showTab('setup',this)">Setup</div>
+        <div class="tab" onclick="showTab('usage',this)">Usage</div>
+        <div class="tab" onclick="showTab('projects',this)">Projects</div>
+        <div class="tab" onclick="showTab('settings',this)">Settings</div>
+      </div>
 
-        <div class="card">
-          <h2>Skill usage (30 days)</h2>
-          <div id="skill-chart"></div>
-        </div>
-
+      <!-- Setup tab -->
+      <div id="tab-setup">
         <div class="card">
           <h2>Your API key</h2>
-          <div class="key-display">
+          <div class="key-box">
             <span id="key-text"></span>
             <button class="copy-btn" onclick="copyKey()">Copy</button>
           </div>
-          <div class="steps">
-            <h3>Setup</h3>
-            <div class="step"><div class="step-num">1</div><div class="step-text"><code>/plugin marketplace add eigenone/jeeves</code></div></div>
-            <div class="step"><div class="step-num">2</div><div class="step-text"><code>/plugin install jeeves@eigenone-jeeves</code></div></div>
-            <div class="step"><div class="step-num">3</div><div class="step-text"><code>/jeeves:activate <span id="key-inline"></span></code></div></div>
+        </div>
+        <div class="card">
+          <h2>Install Jeeves</h2>
+          <div class="step"><div class="step-num">1</div><div class="step-text">In Claude Code:<br><code>/plugin marketplace add eigenone/jeeves</code></div></div>
+          <div class="step"><div class="step-num">2</div><div class="step-text">Install:<br><code>/plugin install jeeves@eigenone-jeeves</code></div></div>
+          <div class="step"><div class="step-num">3</div><div class="step-text">Activate:<br><code>/jeeves:activate <span id="key-inline"></span></code></div></div>
+          <div class="step"><div class="step-num">4</div><div class="step-text">Done. Jeeves remembers everything from here.</div></div>
+        </div>
+      </div>
+
+      <!-- Usage tab -->
+      <div id="tab-usage" class="hidden">
+        <div class="card">
+          <h2>This month</h2>
+          <div class="stat-grid">
+            <div class="stat"><div class="stat-value" id="tokens-used">0</div><div class="stat-label">tokens used</div></div>
+            <div class="stat"><div class="stat-value" id="tokens-allowed">500</div><div class="stat-label">tokens allowed</div></div>
           </div>
+          <div class="progress-bar"><div class="progress-fill" id="usage-bar" style="width:0%"></div></div>
+        </div>
+        <div class="card">
+          <h2>Skill usage (30 days)</h2>
+          <div id="skill-chart"><p class="info">No usage yet.</p></div>
         </div>
       </div>
 
@@ -148,9 +134,7 @@
       <div id="tab-projects" class="hidden">
         <div class="card">
           <h2>Projects</h2>
-          <div id="project-list" class="project-list">
-            <p style="color:#666;font-size:0.85rem;">No projects tracked yet. Use Jeeves in a project to see it here.</p>
-          </div>
+          <div id="project-list"><p class="info">No projects tracked yet. Use Jeeves in a project and it'll appear here.</p></div>
         </div>
       </div>
 
@@ -158,162 +142,112 @@
       <div id="tab-settings" class="hidden">
         <div class="card">
           <h2>Account</h2>
-          <p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">Email: <span id="account-email" style="color:#fff"></span></p>
-          <p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">Plan: <span id="account-plan" style="color:#fff;text-transform:capitalize"></span></p>
-          <p style="color:#888;font-size:0.9rem;">Trial expires: <span id="account-trial" style="color:#fff"></span></p>
+          <p class="info">Plan: <strong id="acct-plan"></strong> <span id="acct-trial"></span></p>
         </div>
-
         <div class="card">
           <h2>Persona</h2>
+          <p class="info">Controls which skills are highlighted. Both work with any key.</p>
           <div class="persona-row">
-            <div class="persona-btn" id="settings-builder" data-persona="builder" onclick="updatePersona('builder')">
-              <span class="persona-label">Builder</span>
-              <span class="persona-desc">For developers</span>
-            </div>
-            <div class="persona-btn" id="settings-explorer" data-persona="explorer" onclick="updatePersona('explorer')">
-              <span class="persona-label">Explorer</span>
-              <span class="persona-desc">For everyone else</span>
-            </div>
+            <div class="persona-btn" id="p-builder" onclick="setPersona('builder')"><span class="persona-label">Builder</span><span class="persona-desc">For developers</span></div>
+            <div class="persona-btn" id="p-explorer" onclick="setPersona('explorer')"><span class="persona-label">Explorer</span><span class="persona-desc">For everyone else</span></div>
           </div>
         </div>
-
         <div class="card">
           <h2>Project tracking</h2>
-          <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem;">Controls what project info is sent to our servers.</p>
+          <p class="info">What project info Jeeves sends to our servers.</p>
           <div class="tracking-row">
-            <div class="tracking-btn" data-level="anonymous" onclick="updateTracking('anonymous')">Anonymous</div>
-            <div class="tracking-btn" data-level="hashed" onclick="updateTracking('hashed')">Hashed</div>
-            <div class="tracking-btn" data-level="named" onclick="updateTracking('named')">Named</div>
+            <div class="tracking-btn" data-l="anonymous" onclick="setTracking('anonymous',this)">Anonymous</div>
+            <div class="tracking-btn" data-l="hashed" onclick="setTracking('hashed',this)">Hashed</div>
+            <div class="tracking-btn" data-l="named" onclick="setTracking('named',this)">Named</div>
           </div>
-          <p style="color:#555;font-size:0.75rem;margin-top:0.5rem;">
-            Anonymous: no project info. Hashed: we see project count but not names. Named: full project dashboard.
-          </p>
+          <p style="color:#555;font-size:0.75rem;margin-top:0.5rem;">Anonymous: no project info. Hashed: we see count, not names. Named: full project dashboard.</p>
         </div>
       </div>
     </div>
 
-    <p class="footer">14-day Pro trial. No credit card. Downgrades to free after.</p>
+    <p class="footer">14-day Pro trial. No credit card required.</p>
   </div>
 
   <script>
     const API = 'https://jeeves-api.singhal-priyank.workers.dev';
-    let persona = 'builder';
     let apiKey = localStorage.getItem('jeeves_key') || '';
-
-    // Auto-login if key exists
     if (apiKey) loadDashboard();
 
-    function selectPersona(el) {
-      document.querySelectorAll('#auth-section .persona-btn').forEach(b => b.classList.remove('selected'));
-      el.classList.add('selected');
-      persona = el.dataset.persona;
-    }
-
-    async function signup() {
+    async function continueWithEmail() {
       const email = document.getElementById('email').value.trim();
-      const errorEl = document.getElementById('error');
-      errorEl.classList.remove('show');
-      if (!email || !email.includes('@')) { errorEl.textContent = 'Enter a valid email.'; errorEl.classList.add('show'); return; }
+      const err = document.getElementById('error');
+      err.classList.add('hidden');
+      if (!email || !email.includes('@')) { err.textContent = 'Enter a valid email.'; err.classList.remove('hidden'); return; }
 
-      const btn = event.target; btn.disabled = true; btn.textContent = 'Creating...';
+      const btn = event.target; btn.disabled = true; btn.textContent = 'Loading...';
       try {
-        const res = await fetch(`${API}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, persona }) });
+        const res = await fetch(`${API}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, persona: 'builder' }) });
         const data = await res.json();
-        if (data.error) { errorEl.textContent = data.error; errorEl.classList.add('show'); btn.disabled = false; btn.textContent = 'Get API Key'; return; }
+        if (data.error) { err.textContent = data.error; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Continue'; return; }
         apiKey = data.api_key;
         localStorage.setItem('jeeves_key', apiKey);
         loadDashboard();
-      } catch (e) { errorEl.textContent = 'Something went wrong.'; errorEl.classList.add('show'); btn.disabled = false; btn.textContent = 'Get API Key'; }
-    }
-
-    async function login() {
-      const key = prompt('Paste your API key (starts with jvs_):');
-      if (!key || !key.startsWith('jvs_')) return;
-      apiKey = key;
-      localStorage.setItem('jeeves_key', apiKey);
-      loadDashboard();
+      } catch (e) { err.textContent = 'Something went wrong.'; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Continue'; }
     }
 
     async function loadDashboard() {
-      document.getElementById('auth-section').classList.add('hidden');
-      document.getElementById('dashboard-section').classList.remove('hidden');
-
+      document.getElementById('login-section').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
       try {
         const res = await fetch(`${API}/account?key=${apiKey}`);
         const data = await res.json();
-        if (data.error) { localStorage.removeItem('jeeves_key'); location.reload(); return; }
-
-        // Key display
+        if (data.error) { logout(); return; }
+        const a = data.account;
+        document.getElementById('user-email').textContent = a.email;
         document.getElementById('key-text').textContent = apiKey;
         document.getElementById('key-inline').textContent = apiKey;
+        document.getElementById('acct-plan').textContent = a.plan;
+        document.getElementById('acct-trial').textContent = a.trial_expires_at ? `(trial ends ${new Date(a.trial_expires_at).toLocaleDateString()})` : '';
+        document.getElementById(`p-${a.persona}`).classList.add('selected');
+        document.querySelectorAll('.tracking-btn').forEach(b => { if (b.dataset.l === a.tracking_level) b.classList.add('selected'); });
 
-        // Usage
-        const used = data.usage.tokens_used;
-        const allowed = data.usage.tokens_allowed;
-        document.getElementById('tokens-used').textContent = used;
-        document.getElementById('tokens-allowed').textContent = allowed;
-        const pct = Math.min(100, (used / allowed) * 100);
+        const u = data.usage;
+        document.getElementById('tokens-used').textContent = u.tokens_used;
+        document.getElementById('tokens-allowed').textContent = u.tokens_allowed;
+        const pct = Math.min(100, (u.tokens_used / u.tokens_allowed) * 100);
         const bar = document.getElementById('usage-bar');
         bar.style.width = pct + '%';
         bar.className = 'progress-fill' + (pct > 90 ? ' danger' : pct > 70 ? ' warning' : '');
 
-        // Skill chart
-        const chartEl = document.getElementById('skill-chart');
         const skills = data.skill_usage || [];
-        if (skills.length === 0) {
-          chartEl.innerHTML = '<p style="color:#666;font-size:0.85rem;">No skill usage yet.</p>';
-        } else {
-          const maxCount = Math.max(...skills.map(s => s.count));
-          chartEl.innerHTML = skills.map(s =>
-            `<div class="skill-bar"><span class="skill-name">${s.skill || 'unknown'}</span><div class="skill-fill" style="width:${(s.count/maxCount)*200}px"></div><span class="skill-count">${s.count}</span></div>`
-          ).join('');
+        const chartEl = document.getElementById('skill-chart');
+        if (skills.length > 0) {
+          const max = Math.max(...skills.map(s => s.count));
+          chartEl.innerHTML = skills.map(s => `<div class="skill-bar"><span class="skill-name">${s.skill||'—'}</span><div class="skill-fill" style="width:${(s.count/max)*200}px"></div><span class="skill-count">${s.count}</span></div>`).join('');
         }
 
-        // Projects
         const projects = data.projects || [];
-        const projectEl = document.getElementById('project-list');
-        if (projects.length === 0) {
-          projectEl.innerHTML = '<p style="color:#666;font-size:0.85rem;">No projects tracked yet.</p>';
-        } else {
-          projectEl.innerHTML = projects.map(p => {
-            const name = p.project_name || p.project_hash.slice(0, 12) + '...';
-            const health = p.last_health_score ? `<span class="project-health" style="color:${p.last_health_score >= 80 ? '#4a6' : p.last_health_score >= 60 ? '#f7a84a' : '#f44'}">${p.last_health_score}/100</span>` : '';
-            return `<div class="project"><div><div class="project-name">${name}</div><div class="project-stats">${p.last_patterns || 0} patterns, ${p.last_decisions || 0} decisions</div></div><div>${health}</div></div>`;
+        const pEl = document.getElementById('project-list');
+        if (projects.length > 0) {
+          pEl.innerHTML = projects.map(p => {
+            const name = p.project_name || (p.project_hash ? p.project_hash.slice(0,12)+'...' : '?');
+            const health = p.last_health_score ? `<span style="color:${p.last_health_score>=80?'#4a6':p.last_health_score>=60?'#f7a84a':'#f44'};font-weight:700">${p.last_health_score}/100</span>` : '';
+            return `<div class="project"><div><div class="project-name">${name}</div><div class="project-stats">${p.last_patterns||0} patterns, ${p.last_decisions||0} decisions</div></div>${health}</div>`;
           }).join('');
         }
-
-        // Settings
-        const acct = data.account;
-        document.getElementById('account-email').textContent = acct.email;
-        document.getElementById('account-plan').textContent = acct.plan;
-        document.getElementById('account-trial').textContent = acct.trial_expires_at ? new Date(acct.trial_expires_at).toLocaleDateString() : 'N/A';
-
-        document.getElementById(`settings-${acct.persona}`).classList.add('selected');
-        document.querySelectorAll('.tracking-btn').forEach(b => {
-          if (b.dataset.level === acct.tracking_level) b.classList.add('selected');
-        });
-      } catch (e) {
-        console.error(e);
-      }
+      } catch(e) { console.error(e); }
     }
 
-    function showTab(name) {
-      ['overview', 'projects', 'settings'].forEach(t => {
-        document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== name);
-      });
+    function showTab(name, el) {
+      ['setup','usage','projects','settings'].forEach(t => document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== name));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      event.target.classList.add('active');
+      el.classList.add('active');
     }
 
-    async function updatePersona(p) {
-      document.querySelectorAll('#tab-settings .persona-btn').forEach(b => b.classList.remove('selected'));
-      document.getElementById(`settings-${p}`).classList.add('selected');
+    async function setPersona(p) {
+      document.querySelectorAll('.persona-btn').forEach(b => b.classList.remove('selected'));
+      document.getElementById(`p-${p}`).classList.add('selected');
       await fetch(`${API}/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: apiKey, persona: p }) });
     }
 
-    async function updateTracking(level) {
+    async function setTracking(level, el) {
       document.querySelectorAll('.tracking-btn').forEach(b => b.classList.remove('selected'));
-      event.target.classList.add('selected');
+      el.classList.add('selected');
       await fetch(`${API}/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: apiKey, tracking_level: level }) });
     }
 
@@ -323,7 +257,14 @@
       setTimeout(() => document.querySelector('.copy-btn').textContent = 'Copy', 2000);
     }
 
-    document.getElementById('email').addEventListener('keypress', e => { if (e.key === 'Enter') signup(); });
+    function logout() {
+      localStorage.removeItem('jeeves_key');
+      apiKey = '';
+      document.getElementById('dashboard').classList.add('hidden');
+      document.getElementById('login-section').classList.remove('hidden');
+    }
+
+    document.getElementById('email').addEventListener('keypress', e => { if (e.key === 'Enter') continueWithEmail(); });
   </script>
 </body>
 </html>
