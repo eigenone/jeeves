@@ -145,15 +145,20 @@ function getSchemaEntities(): string[] {
 function getDocumentedEntities(): string[] {
   if (!exists(SYSTEM_MAP)) return [];
   const content = read(SYSTEM_MAP);
-  // Look for entity registry table rows: | EntityName | ... |
-  const entitySection = content.match(/(?:entity|entities|registry|models)[\s\S]*?\n\|.*\|.*\|\n((?:\|.*\|.*\|\n?)*)/i);
-  if (!entitySection) return [];
-  const rows = entitySection[1].match(/^\|\s*`?(\w+)`?\s*\|/gm);
+  // Extract every first-column table cell from the entire doc. An earlier
+  // version filtered by section keyword (entity/registry/models), but that
+  // missed tables under subsection headings like "Hreflang" or "Integrations"
+  // that don't include those keywords. Scanning all tables catches a few
+  // header-row words ("Table", "Entity") but those don't collide with real
+  // schema names, so the missing-entity check stays accurate.
+  const rows = content.match(/^\|\s*`?(\w+)`?\s*\|/gm);
   if (!rows) return [];
-  return rows.map(r => {
-    const match = r.match(/^\|\s*`?(\w+)`?\s*\|/);
-    return match ? match[1] : "";
-  }).filter(Boolean);
+  const all: string[] = [];
+  for (const row of rows) {
+    const match = row.match(/^\|\s*`?(\w+)`?\s*\|/);
+    if (match && match[1]) all.push(match[1]);
+  }
+  return [...new Set(all)];
 }
 
 // ── Git analysis ─────────────────────────────────────────────
@@ -206,29 +211,136 @@ function getPatternFiles(): Map<string, string[]> {
     const paths = [...content.matchAll(/`([a-zA-Z][a-zA-Z0-9_\-./]+\.[a-zA-Z]{1,6})`/g)]
       .map(m => m[1])
       .filter(p => !p.startsWith("http") && !p.startsWith("@") && p.includes("/"));
-    result.set(file, paths);
+    // Dedupe — same ref can appear multiple times in a doc (in prose + code
+    // block + table), and downstream callers (staleness check) treat refs as
+    // a set, so duplicates only create redundant work and noisy previews.
+    result.set(file, [...new Set(paths)]);
   }
   return result;
+}
+
+// False-positive patterns to skip when scanning for broken paths: hostnames
+// with paths, language constructs written as slash-separated words, glob
+// wildcards, multiline blocks. These look like file paths to the regex but
+// aren't real refs that should resolve on disk.
+const PATH_SKIP_PATTERNS = [
+  /^[a-z]+\.[\w.-]+\.\w+\//, // hostnames with paths (cdn.example.com/foo.js)
+  /^[a-z]+\/[a-z]+\/[a-z]+$/, // language constructs (try/catch/finally)
+  /^[a-z]+\/[a-z]+$/, // two-part language constructs (try/catch)
+  /\*\*/, // glob double-star (tests/api/**)
+  /\*\./, // glob wildcards (drizzle/*.sql)
+  /\[[^\]]+\]/, // template placeholders ([type], [entity-type], [slug])
+  /\bxxx\b/i, // literal "xxx" placeholders (app/api/geo-xxx/route.ts)
+  /\n/, // multiline blocks
+];
+
+// Top-level directories that exist in the project, used as a prefix allowlist
+// for path candidates. Computed once. We only flag references that look like
+// they'd resolve to a real top-level dir — random backticked strings with
+// slashes (markdown headings, prose, code comments) get filtered out.
+let _projectDirs: Set<string> | null = null;
+function getProjectDirs(): Set<string> {
+  if (_projectDirs) return _projectDirs;
+  const dirs = new Set<string>();
+  try {
+    for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+        dirs.add(entry.name);
+      }
+    }
+  } catch {}
+  _projectDirs = dirs;
+  return dirs;
+}
+
+/**
+ * Strip ✅-marked top-level sections from a markdown doc. Used by the
+ * broken-paths scanner so SHIPPED/RESOLVED archive entries don't generate
+ * noise — the file refs in those sections may legitimately point at
+ * deleted files (the section preserves the incident report for history).
+ * Section starts at a `##` or `#` heading whose text begins with `✅` and
+ * runs until the next heading of the same depth (or shallower), or EOF.
+ */
+function stripResolvedSections(md: string): string {
+  const out: string[] = [];
+  const lines = md.split("\n");
+  let skipDepth: number | null = null;
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const depth = headingMatch[1].length;
+      const text = headingMatch[2];
+      if (skipDepth !== null && depth <= skipDepth) skipDepth = null;
+      if (skipDepth === null && /^✅/.test(text)) {
+        skipDepth = depth;
+        continue; // skip the heading line itself
+      }
+    }
+    if (skipDepth === null) out.push(line);
+  }
+  return out.join("\n");
 }
 
 function findBrokenPaths(): Array<{ doc: string; brokenPath: string }> {
   const broken: Array<{ doc: string; brokenPath: string }> = [];
   const allDocs = getAllMdFiles(DOCS_DIR);
+  const projectDirs = getProjectDirs();
 
   for (const docPath of allDocs) {
-    const content = read(docPath);
-    const paths = [...content.matchAll(/`([a-zA-Z][a-zA-Z0-9_\-./]+\.[a-zA-Z]{1,6})`/g)]
-      .map(m => m[1])
-      .filter(p =>
-        !p.startsWith("http") && !p.startsWith("@") && !p.startsWith("node:") &&
-        !p.startsWith("$") && p.includes("/") && !p.includes("*") &&
-        !p.includes("<") && !p.includes("{{")
-      );
+    const rawContent = read(docPath);
+    // Strip noise that legitimately holds dead refs:
+    //   1. ✅-marked sections — historical archive, paths may be legit-deleted.
+    //   2. Strikethrough spans (~~ ... ~~) — dead-code-audit convention for
+    //      "this used to exist and we removed it on purpose." Match the
+    //      WHOLE strikethrough span (single line, non-greedy) so any backtick
+    //      path embedded inside the strikethrough goes away with it. Handles
+    //      both `~~`path`~~` and `~~Delete `path` — done.~~` forms.
+    const content = stripResolvedSections(rawContent)
+      .replace(/~~[^\n]*?~~/g, "");
+    // Match the FULL backtick-wrapped string. Earlier we pulled substrings
+    // that matched a path-shaped regex even when they were embedded in a
+    // longer string with parens/spaces, which created false positives like
+    // "foo/page.tsx" extracted from "app/(group)/[id]/foo/page.tsx" inside
+    // a code block. Filtering on the whole backticked token avoids that.
+    const candidates = [...content.matchAll(/`([^`\n]+)`/g)].map(m => m[1]);
+    const paths = candidates.filter(c => {
+      const looksLikePath =
+        (c.includes("/") || /\.\w{2,6}$/.test(c)) &&
+        !PATH_SKIP_PATTERNS.some(p => p.test(c)) &&
+        !c.includes(" ") &&
+        !c.includes("(") &&
+        !c.includes("<") &&
+        !c.includes(":") &&
+        !c.startsWith("http") &&
+        !c.startsWith("@") &&
+        !c.startsWith("node:") &&
+        !c.startsWith("$") &&
+        !c.includes("*") &&
+        !c.includes("{{") &&
+        c.length < 200;
+      if (!looksLikePath) return false;
+      // Must start with an actual top-level project dir, a doc-relative
+      // prefix (patterns/, decisions/), or one of a small allowlist of
+      // hidden dirs jeeves itself manages. getProjectDirs() skips hidden
+      // dirs to avoid noise from .git/.next/.turbo, but jeeves docs
+      // routinely reference .claude/hooks/ and .github/workflows/ —
+      // without this allowlist those refs slip through unvalidated.
+      const topDir = c.split("/")[0];
+      const HIDDEN_ALLOWLIST = new Set([".claude", ".github", ".githooks"]);
+      return projectDirs.has(topDir)
+        || topDir === "patterns"
+        || topDir === "decisions"
+        || HIDDEN_ALLOWLIST.has(topDir);
+    });
 
     for (const ref of paths) {
-      // Strip :line or :line:col suffix (common in references like `file.ts:42`)
       const cleanRef = ref.replace(/:\d+(:\d+)?$/, "");
-      if (!exists(path.join(ROOT, cleanRef))) {
+      // Try resolving relative to project root AND relative to DOCS_DIR —
+      // cross-doc refs like `patterns/foo.md` written from SYSTEM-MAP.md
+      // resolve to docs/internal/patterns/foo.md, not patterns/foo.md.
+      const resolvedRoot = path.join(ROOT, cleanRef);
+      const resolvedDocs = path.join(DOCS_DIR, cleanRef);
+      if (!exists(resolvedRoot) && !exists(resolvedDocs)) {
         broken.push({ doc: path.relative(ROOT, docPath), brokenPath: ref });
       }
     }
@@ -529,7 +641,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
         .filter(Boolean)
     );
 
-    const staleRefs: string[] = [];
+    const staleRefs: Array<{ ref: string; latestMsg: string }> = [];
     for (const ref of refs) {
       if (isIgnoredForStaleness(ref)) continue;
       if (!exists(path.join(ROOT, ref))) continue;
@@ -538,24 +650,30 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       const refLastSha = run(`git log -1 --format=%H -- "${ref}" 2>/dev/null`);
       if (!refLastSha || refLastSha === docLastSha) continue; // Same commit or not tracked
 
-      // Check if the ref's latest commit is actually newer than doc's
-      const isNewer = run(`git log --format=%H ${docLastSha}..HEAD -- "${ref}" 2>/dev/null`);
-      if (!isNewer) continue; // Ref wasn't changed after doc's commit
+      // Get the latest commit subject for this ref since the doc's commit.
+      // Doubles as the "is there any commit after doc's" check (empty => no).
+      // Including the subject lets the reviewing agent judge whether the
+      // change touched the documented surface without reading the diff.
+      const latestMsg = run(`git log -1 --format=%s ${docLastSha}..HEAD -- "${ref}" 2>/dev/null`);
+      if (!latestMsg) continue; // Ref wasn't changed after doc's commit
 
       // Was the ref also touched in the doc's commit? If so, they were updated together → fresh
       if (docCommitFiles.has(ref)) continue;
 
-      staleRefs.push(ref);
+      staleRefs.push({ ref, latestMsg });
     }
 
     if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
       // 1 changed ref is often a false positive (implementation change that doesn't
       // affect the doc's claims). 2+ is more likely real drift. Use priority to
       // distinguish: low = informational, medium = likely real.
+      const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + "…" : s;
+      const top = staleRefs.slice(0, 3).map(r => `${r.ref} ("${truncate(r.latestMsg, 50)}")`);
+      const more = staleRefs.length > 3 ? ` (+${staleRefs.length - 3} more)` : "";
       actions.push({
         type: "update",
         target: docRelPath,
-        description: `Stale — ${staleRefs.length} referenced file(s) changed since doc was last updated: ${staleRefs.slice(0, 3).join(", ")}`,
+        description: `Stale — ${staleRefs.length} ref(s) changed since doc: ${top.join(", ")}${more}`,
         priority: staleRefs.length >= 2 ? "medium" : "low",
       });
     }
@@ -1736,11 +1854,26 @@ function main() {
     }
   }
 
-  // Rebuild concept index on every sync
+  // Concept index: report only, don't rewrite. Rewriting on every sync
+  // created working-tree churn after every check, forcing users to commit
+  // incidental drift. Regenerate explicitly via `--index` mode instead.
   if (state.hasDocs) {
     const entries = buildConceptIndex();
-    writeConceptIndex(entries);
-    console.log(`📚 Concept index: ${entries.length} concepts across ${new Set(entries.flatMap(e => e.docs)).size} docs`);
+    console.log(`📚 Concept index: ${entries.length} concepts across ${new Set(entries.flatMap(e => e.docs)).size} docs (run with --index to regenerate the file)`);
+  }
+
+  // Self-heal .gitattributes: mark CONCEPT-INDEX.md as linguist-generated so
+  // it collapses in PR diffs. Idempotent — only appends if missing. Plugin
+  // installs don't run the bootstrap step that would otherwise do this.
+  const indexFile = path.join(DOCS_DIR, "CONCEPT-INDEX.md");
+  if (exists(indexFile)) {
+    const gaPath = path.join(ROOT, ".gitattributes");
+    const marker = "docs/internal/CONCEPT-INDEX.md linguist-generated=true";
+    const existing = exists(gaPath) ? read(gaPath) : "";
+    if (!existing.includes(marker)) {
+      const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+      fs.writeFileSync(gaPath, existing + prefix + marker + "\n");
+    }
   }
 
   // Auto-heal broken paths if heal-docs.ts exists
