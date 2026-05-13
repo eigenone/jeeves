@@ -2,25 +2,64 @@
 // Jeeves MCP server — exposes read-only doc queries as MCP tools.
 // stdio JSON-RPC, no SDK dependency.
 
-const { execSync, spawnSync } = require("child_process");
+const { spawnSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "jeeves", version: "1.0.0" };
+const SERVER_INFO = { name: "jeeves", version: "1.1.0" };
 
 const TOOLS = [
   {
     name: "jeeves_check",
     description:
-      "Get Jeeves's read on the current project: KB stats, last doc update, code changes since, broken doc paths, unindexed docs, and schema entities missing from SYSTEM-MAP. Returns structured JSON. Use this instead of running /jeeves or reading docs manually when you want a fast project-state snapshot.",
+      "Fast project-state snapshot: KB stats (patterns, decisions), last doc-update date, code-change counts since, broken doc paths, unindexed docs, and schema entities missing from SYSTEM-MAP. Returns structured JSON. Use this at session start or whenever you'd previously run /jeeves --check.",
     inputSchema: {
       type: "object",
       properties: {
-        project: {
+        project: { type: "string", description: "Absolute path to the project root. Defaults to cwd." },
+      },
+    },
+  },
+  {
+    name: "jeeves_search",
+    description:
+      "Search the project's knowledge base (docs/internal/patterns and docs/internal/decisions) for a query string. Returns matching files with line numbers and excerpts. Use this when you need to recall what the project already knows about a topic before reading files or asking the user.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search term or phrase. Case-insensitive." },
+        project: { type: "string", description: "Absolute path to the project root. Defaults to cwd." },
+        scope: {
           type: "string",
-          description: "Absolute path to the project root. Defaults to the current working directory.",
+          enum: ["all", "patterns", "decisions"],
+          description: "Which subset of the KB to search. Defaults to 'all'.",
         },
+        limit: { type: "number", description: "Max matches to return. Defaults to 20." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "jeeves_stale",
+    description:
+      "Get the list of doc actions Jeeves currently recommends: missing entities, new features lacking pattern docs, broken paths, unindexed docs, etc. Each action has a priority (high/medium/low) and a target file. Use this when deciding what doc work matters most.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Absolute path to the project root. Defaults to cwd." },
+      },
+    },
+  },
+  {
+    name: "jeeves_health",
+    description:
+      "Get the KB health score (0-100) with grade, status, and breakdown across 5 categories (Structure, Freshness, Completeness, Audit Health, Lint). Includes targeted recommendations for the lowest-scoring areas. Use this when the user asks how the docs are doing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Absolute path to the project root. Defaults to cwd." },
       },
     },
   },
@@ -42,31 +81,73 @@ function findJeevesScript(projectRoot) {
   ].filter(Boolean);
   for (const c of candidates) {
     try {
-      require("fs").accessSync(c);
+      fs.accessSync(c);
       return c;
     } catch {}
   }
   return null;
 }
 
-function runCheck(projectRoot) {
+function runJeevesJson(projectRoot, mode) {
   const script = findJeevesScript(projectRoot);
   if (!script) {
     return { error: `Cannot locate jeeves.ts (looked in CLAUDE_PLUGIN_ROOT, ${projectRoot}/scripts, plugin dir)` };
   }
-  const result = spawnSync("npx", ["tsx", script, projectRoot, "--check", "--json"], {
+  const result = spawnSync("npx", ["tsx", script, projectRoot, `--${mode}`, "--json"], {
     cwd: projectRoot,
-    timeout: 30000,
+    timeout: 45000,
     encoding: "utf-8",
   });
   if (result.status !== 0) {
-    return { error: `jeeves --check exited ${result.status}: ${result.stderr || result.stdout}` };
+    return { error: `jeeves --${mode} exited ${result.status}: ${result.stderr || result.stdout}` };
   }
   try {
     return JSON.parse(result.stdout);
   } catch (e) {
     return { error: `Failed to parse jeeves JSON: ${e.message}`, raw: result.stdout.slice(0, 500) };
   }
+}
+
+function searchKb(projectRoot, query, scope, limit) {
+  const docsRoot = path.join(projectRoot, "docs", "internal");
+  const dirs = [];
+  if (scope === "all" || scope === "patterns") dirs.push(path.join(docsRoot, "patterns"));
+  if (scope === "all" || scope === "decisions") dirs.push(path.join(docsRoot, "decisions"));
+
+  const existing = dirs.filter(d => fs.existsSync(d));
+  if (existing.length === 0) {
+    return { matches: [], note: `No ${scope} docs found under ${docsRoot}` };
+  }
+
+  const result = spawnSync("grep", ["-rniI", "--include=*.md", query, ...existing], {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    timeout: 15000,
+  });
+  // grep exits 1 when no matches — that's fine.
+  if (result.status !== 0 && result.status !== 1) {
+    return { error: `grep exited ${result.status}: ${result.stderr}` };
+  }
+
+  const lines = (result.stdout || "").split("\n").filter(Boolean);
+  const max = Math.min(limit || 20, 100);
+  const matches = lines.slice(0, max).map(line => {
+    const idx1 = line.indexOf(":");
+    const idx2 = line.indexOf(":", idx1 + 1);
+    if (idx1 === -1 || idx2 === -1) return { raw: line };
+    const file = path.relative(projectRoot, line.slice(0, idx1));
+    const lineNum = parseInt(line.slice(idx1 + 1, idx2), 10);
+    const excerpt = line.slice(idx2 + 1).trim();
+    return { file, line: lineNum, excerpt };
+  });
+
+  return {
+    query,
+    scope,
+    total: lines.length,
+    truncated: lines.length > max,
+    matches,
+  };
 }
 
 function handle(msg) {
@@ -80,9 +161,7 @@ function handle(msg) {
     });
   }
 
-  if (method === "notifications/initialized") {
-    return; // no response for notifications
-  }
+  if (method === "notifications/initialized") return;
 
   if (method === "tools/list") {
     return reply(id, { tools: TOOLS });
@@ -91,23 +170,27 @@ function handle(msg) {
   if (method === "tools/call") {
     const name = params?.name;
     const args = params?.arguments || {};
+    const projectRoot = args.project || process.cwd();
 
-    if (name === "jeeves_check") {
-      const projectRoot = args.project || process.cwd();
-      const data = runCheck(projectRoot);
-      return reply(id, {
-        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        structuredContent: data,
-        isError: !!data.error,
-      });
+    let data;
+    if (name === "jeeves_check") data = runJeevesJson(projectRoot, "check");
+    else if (name === "jeeves_stale") data = runJeevesJson(projectRoot, "stale");
+    else if (name === "jeeves_health") data = runJeevesJson(projectRoot, "health");
+    else if (name === "jeeves_search") {
+      if (!args.query) return replyError(id, -32602, "jeeves_search requires 'query'");
+      data = searchKb(projectRoot, args.query, args.scope || "all", args.limit);
+    } else {
+      return replyError(id, -32601, `Unknown tool: ${name}`);
     }
 
-    return replyError(id, -32601, `Unknown tool: ${name}`);
+    return reply(id, {
+      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      structuredContent: data,
+      isError: !!data.error,
+    });
   }
 
-  if (id !== undefined) {
-    replyError(id, -32601, `Unknown method: ${method}`);
-  }
+  if (id !== undefined) replyError(id, -32601, `Unknown method: ${method}`);
 }
 
 const rl = readline.createInterface({ input: process.stdin });

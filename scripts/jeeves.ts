@@ -28,7 +28,7 @@ import * as path from "path";
 import { execSync } from "child_process";
 
 const ROOT = process.argv.find(a => !a.startsWith("-") && a !== process.argv[0] && a !== process.argv[1]) || process.cwd();
-const MODES = ["handoff", "check", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive"] as const;
+const MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 const DOCS_DIR = path.join(ROOT, "docs", "internal");
@@ -1854,6 +1854,62 @@ function main() {
     }
 
     console.log("");
+    return;
+  }
+
+  if (MODE === "stale" || MODE === "health") {
+    // These are pure-data modes — actions or health score, always as JSON.
+    const actions = generateActions(state, git);
+
+    if (MODE === "stale") {
+      const payload = {
+        total: actions.length,
+        byPriority: {
+          high: actions.filter(a => a.priority === "high").length,
+          medium: actions.filter(a => a.priority === "medium").length,
+          low: actions.filter(a => a.priority === "low").length,
+        },
+        actions: actions.map(a => ({
+          type: a.type,
+          priority: a.priority,
+          target: a.target,
+          description: a.description,
+        })),
+      };
+      process.stdout.write(JSON.stringify(payload));
+      return;
+    }
+
+    // MODE === "health"
+    const healthScript = path.join(ROOT, "scripts", "health-score.sh");
+    if (!exists(healthScript)) {
+      process.stdout.write(JSON.stringify({ error: "health-score.sh not found", expectedAt: healthScript }));
+      return;
+    }
+    const raw = run(`bash ${JSON.stringify(healthScript)} ${JSON.stringify(ROOT)} 2>&1`, { timeout: 30000 });
+    const final = raw.match(/HEALTH SCORE:\s*(\d+)\/100\s*\(([A-F])\s*—\s*([^)]+)\)/);
+    const categories: Record<string, { score: number; max: number }> = {};
+    const catRegex = /(Structure|Freshness|Completeness|Audit Health|Lint):\s*(\d+)\/(\d+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = catRegex.exec(raw)) !== null) {
+      const key = m[1].toLowerCase().replace(/\s+/g, "_");
+      categories[key] = { score: parseInt(m[2], 10), max: parseInt(m[3], 10) };
+    }
+    const recommendations: string[] = [];
+    const recRegex = /^\s*→\s*(.+)$/gm;
+    while ((m = recRegex.exec(raw)) !== null) {
+      recommendations.push(m[1].trim());
+    }
+    const payload = final
+      ? {
+          score: parseInt(final[1], 10),
+          grade: final[2],
+          status: final[3].trim(),
+          categories,
+          recommendations,
+        }
+      : { error: "Could not parse health score", raw: raw.slice(0, 800) };
+    process.stdout.write(JSON.stringify(payload));
     return;
   }
 
