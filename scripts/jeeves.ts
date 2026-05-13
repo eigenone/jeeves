@@ -30,6 +30,7 @@ import { execSync } from "child_process";
 const ROOT = process.argv.find(a => !a.startsWith("-") && a !== process.argv[0] && a !== process.argv[1]) || process.cwd();
 const MODES = ["handoff", "check", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
+const JSON_OUT = process.argv.includes("--json");
 const DOCS_DIR = path.join(ROOT, "docs", "internal");
 const THINKING_DIR = path.join(ROOT, "thinking");
 const SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
@@ -1799,7 +1800,34 @@ function main() {
   }
 
   if (MODE === "check") {
-    // Quick session-start report
+    const broken = findBrokenPaths();
+    const unindexed = findUnindexedDocs();
+    const missingEntities = getSchemaEntities().filter(
+      e => !getDocumentedEntities().some(d => d.toLowerCase() === e.toLowerCase())
+    );
+    const totalChanges = git.changedCodeFiles.length + git.newCodeFiles.length + git.deletedCodeFiles.length;
+
+    if (JSON_OUT) {
+      const payload = {
+        mode: state.mode,
+        kb: { patterns: state.patternCount, decisions: state.decisionCount },
+        systemMap: state.hasSystemMap,
+        lastDocDate: git.lastDocDate || null,
+        codeChanges: {
+          total: totalChanges,
+          new: git.newCodeFiles.length,
+          modified: git.changedCodeFiles.length,
+          deleted: git.deletedCodeFiles.length,
+        },
+        brokenPaths: broken,
+        unindexedDocs: unindexed,
+        missingEntities,
+      };
+      process.stdout.write(JSON.stringify(payload));
+      return;
+    }
+
+    // Human-readable session-start report
     console.log(`\n📋 Jeeves — Session Check\n`);
     console.log(`Mode: ${state.mode}`);
     console.log(`KB: ${state.patternCount} patterns, ${state.decisionCount} decisions`);
@@ -1809,26 +1837,18 @@ function main() {
       console.log(`Last doc update: ${git.lastDocDate}`);
     }
 
-    const totalChanges = git.changedCodeFiles.length + git.newCodeFiles.length + git.deletedCodeFiles.length;
     if (totalChanges > 0) {
       console.log(`Code changes since last doc update: ${totalChanges} files (${git.newCodeFiles.length} new, ${git.changedCodeFiles.length} modified, ${git.deletedCodeFiles.length} deleted)`);
     } else {
       console.log("Docs are up to date with code.");
     }
 
-    const broken = findBrokenPaths();
     if (broken.length > 0) {
       console.log(`⚠ ${broken.length} broken file path(s) in docs`);
     }
-
-    const unindexed = findUnindexedDocs();
     if (unindexed.length > 0) {
       console.log(`⚠ ${unindexed.length} doc(s) not indexed in SYSTEM-MAP`);
     }
-
-    const missingEntities = getSchemaEntities().filter(
-      e => !getDocumentedEntities().some(d => d.toLowerCase() === e.toLowerCase())
-    );
     if (missingEntities.length > 0) {
       console.log(`⚠ ${missingEntities.length} schema entities not in SYSTEM-MAP: ${missingEntities.join(", ")}`);
     }
