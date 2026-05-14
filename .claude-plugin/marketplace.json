@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "jeeves",
-      "source": ".",
+      "source": "./",
       "description": "Session memory and living docs — 15 modes for brainstorming, code documentation, quality hardening, and drift detection. Your AI doesn't remember. Jeeves does.",
       "version": "4.3.0",
       "author": {
