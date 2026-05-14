@@ -1,0 +1,13 @@
+{
+  "name": "jeeves",
+  "description": "Your AI doesn't remember. Jeeves does. Session memory and living documentation for Claude Code.",
+  "version": "4.3.0",
+  "author": {
+    "name": "Jeeves",
+    "email": "support@trustjeeves.com"
+  },
+  "homepage": "https://trustjeeves.com",
+  "repository": "https://github.com/eigenone/jeeves-agentknowledge",
+  "license": "MIT",
+  "keywords": ["documentation", "knowledge-base", "session-memory", "brainstorm", "decisions"]
+}
