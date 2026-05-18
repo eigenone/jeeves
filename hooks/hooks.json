@@ -39,6 +39,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/thinking-capture-gate.sh",
+            "timeout": 20
+          }
+        ]
+      }
     ]
   }
 }

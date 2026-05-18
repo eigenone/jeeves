@@ -28,9 +28,13 @@ import * as path from "path";
 import { execSync } from "child_process";
 
 const ROOT = process.argv.find(a => !a.startsWith("-") && a !== process.argv[0] && a !== process.argv[1]) || process.cwd();
-const MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive"] as const;
+const MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
+function argVal(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
 const DOCS_DIR = path.join(ROOT, "docs", "internal");
 const THINKING_DIR = path.join(ROOT, "thinking");
 const SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
@@ -74,6 +78,35 @@ function getAllMdFiles(dir: string): string[] {
 
 function today(): string {
   return new Date().toISOString().split("T")[0];
+}
+
+const CODE_EXTS = new Set([".py",".js",".ts",".tsx",".jsx",".rb",".go",".rs",".java",".kt",".swift",".php",".ex",".exs",".c",".cc",".cpp",".h",".hpp",".cs",".scala",".clj",".hs",".ml",".tf",".ipynb",".sql",".sh"]);
+const CODE_MANIFESTS = new Set(["package.json","go.mod","Cargo.toml","pyproject.toml","pom.xml","Gemfile","mix.exs","composer.json"]);
+
+function countSourceFiles(dir: string, budget = 2000): number {
+  let n = 0;
+  const walk = (d: string) => {
+    if (n >= 3 || budget <= 0) return;
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(d); } catch { return; }
+    for (const e of entries) {
+      if (n >= 3 || budget <= 0) return;
+      if (e === "node_modules" || e === ".git" || e === "thinking" || e === ".claude") continue;
+      const full = path.join(d, e);
+      budget--;
+      let st: fs.Stats;
+      try { st = fs.statSync(full); } catch { continue; }
+      if (st.isDirectory()) { walk(full); continue; }
+      if (CODE_MANIFESTS.has(e) || CODE_EXTS.has(path.extname(e))) n++;
+    }
+  };
+  walk(dir);
+  return n;
+}
+
+function isThinkingCandidate(): boolean {
+  if (exists(DOCS_DIR)) return false;
+  return countSourceFiles(ROOT) < 3;
 }
 
 // ── Detection ────────────────────────────────────────────────
@@ -1796,6 +1829,112 @@ function main() {
     writeConceptIndex(entries);
     console.log(`Written ${entries.length} concepts to docs/internal/CONCEPT-INDEX.md`);
     console.log(`Covers ${new Set(entries.flatMap(e => e.docs)).size} docs and ${new Set(entries.flatMap(e => e.files)).size} code files\n`);
+    return;
+  }
+
+  if (MODE === "thinking-candidate") {
+    process.stdout.write(isThinkingCandidate() ? "yes" : "no");
+    return;
+  }
+
+  if (MODE === "bootstrap-thinking") {
+    const dirs = ["sessions", "topics", "decisions"].map(d => path.join(THINKING_DIR, d));
+    for (const d of dirs) fs.mkdirSync(d, { recursive: true });
+    const indexPath = path.join(THINKING_DIR, "INDEX.md");
+    if (!exists(indexPath)) {
+      fs.writeFileSync(indexPath,
+`<!-- Jeeves thinking-mode workspace. Decisions/ideas/questions are captured here automatically. Delete this folder to opt out. -->
+
+# Thinking Index
+
+**Last session:** (none yet)
+
+## Active Topics
+| Topic | File | Status | Last updated |
+|-------|------|--------|-------------|
+
+## Key Decisions
+| Decision | Date | File |
+|----------|------|------|
+
+## Open Questions
+| Question | Raised | Blocking? |
+|----------|--------|-----------|
+`);
+    }
+    process.stdout.write("bootstrapped");
+    return;
+  }
+
+  if (MODE === "capture-check") {
+    const NUDGE_INTERVAL = 5, SUBSTANCE_THRESHOLD = 6, GIT_DEFER_WINDOW = 8;
+    const state = detectState();
+    const prompts = parseInt(argVal("--prompts") || "0", 10) || 0;
+    const headLast = argVal("--head-last") || "";
+    // Prompt index at which session-check last OBSERVED HEAD move. The hook owns
+    // this (it runs every prompt and detects commits via headChanged); the gate
+    // only reads it. deferForGit is a WINDOW (GIT_DEFER_WINDOW prompts) after a
+    // commit, not "HEAD differs from last check" — the latter is always false by
+    // the time the Stop gate runs because session-check already advanced
+    // head_at_last_check on the same prompt.
+    const lastCommitPrompt = parseInt(argVal("--last-commit-prompt") || "0", 10) || 0;
+    // Per-session baseline: the hook records the newest thinking/ mtime that
+    // existed BEFORE this session and passes it as --since. A capture counts
+    // only if it is newer than that baseline, so a decision file written in a
+    // PRIOR session does not silence the gate forever. Default 0 = "any file
+    // counts" (used only by direct/standalone invocations and the bootstrap path).
+    // parseFloat (NOT parseInt): mtimeMs is a float on APFS/ext4 (sub-ms
+    // precision). parseInt would truncate the baseline, making every prior
+    // file's mtime compare strictly greater and silently re-introducing the
+    // "gate silenced forever" bug.
+    const since = parseFloat(argVal("--since") || "0") || 0;
+    const isThinking = state.mode === "brainstorm" || state.mode === "both";
+
+    let captured = false;
+    let newest = 0; // newest mtime (ms) across thinking/{decisions,topics,sessions}
+    if (exists(THINKING_DIR)) {
+      const subdirs = ["decisions", "topics", "sessions"].map(d => path.join(THINKING_DIR, d));
+      for (const d of subdirs) {
+        if (!exists(d)) continue;
+        for (const f of fs.readdirSync(d)) {
+          try { newest = Math.max(newest, fs.statSync(path.join(d, f)).mtimeMs); } catch {}
+        }
+      }
+      // INDEX.md alone (just the bootstrap header) does NOT count as a capture;
+      // only files inside decisions/topics/sessions, newer than the session
+      // baseline, count.
+      if (newest > since) captured = true;
+    }
+
+    let head = "";
+    try { head = run("git rev-parse HEAD 2>/dev/null").trim(); } catch {}
+    // headChanged = a commit happened since the hook last recorded HEAD. The hook
+    // turns this into a prompt-indexed last_commit_prompt. recentGitCommit is the
+    // deferral window: within GIT_DEFER_WINDOW prompts of the last observed commit.
+    const headChanged = !!(head && headLast && head !== headLast);
+    const recentGitCommit = lastCommitPrompt > 0 && (prompts - lastCommitPrompt) < GIT_DEFER_WINDOW;
+
+    const sessionHasSubstance = prompts >= SUBSTANCE_THRESHOLD;
+    const deferForGit = state.mode === "both" && recentGitCommit;
+    const shouldBlock = isThinking && sessionHasSubstance && !captured && !deferForGit;
+    const shouldNudge = isThinking && prompts > 0 && prompts % NUDGE_INTERVAL === 0 && !captured && !deferForGit && sessionHasSubstance;
+
+    const payload = {
+      mode: state.mode,
+      sessionId: argVal("--session") || "",
+      promptsThisSession: prompts,
+      captured, // true once a this-session thinking/ write exists; hook resets nudge_level on it
+      lastThinkingWriteAgo: captured ? 0 : -1,
+      newest, // ms; the hook records this on its first call as the per-session --since baseline
+      sessionHasSubstance,
+      recentGitCommit,
+      headChanged, // hook sets last_commit_prompt=prompts when this is true
+      head,
+      shouldNudge,
+      shouldBlock,
+      captureTargets: ["thinking/decisions/", "thinking/INDEX.md"],
+    };
+    process.stdout.write(JSON.stringify(payload));
     return;
   }
 
