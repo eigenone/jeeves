@@ -27,13 +27,43 @@ JEEVES_SCRIPT="scripts/jeeves.ts"
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0
 # Sourcing the state file evaluates it as shell. Accepted: STATE path is keyed
 # on a sanitized session id under /tmp (sticky bit; same-UID only), and every
 # persisted value originates from controlled code (git SHA, ints, mtime float),
 # never user input. Not safe for multi-tenant; fine for single-user dev.
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
 prompts=$((prompts + 1))
+
+# --- usage telemetry: one session_start per session ---
+# Parity with pre-4.4.0 (the thinking-mode rewrite dropped this). Local file,
+# no content, no network — just event + project + timestamp. Path is overridable
+# (JEEVES_USAGE_LOG) so tests don't pollute the real log.
+USAGE_LOG="${JEEVES_USAGE_LOG:-${HOME}/.jeeves-usage.log}"
+[ "$prompts" -eq 1 ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) session_start project=$(basename "$CWD")" >> "$USAGE_LOG" 2>/dev/null
+
+# --- version staleness warning (best-effort, fail-open, once per session) ---
+# Compares the running plugin version (CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json)
+# against the local marketplace clone's version. If the clone is newer, the user
+# has a newer Jeeves on disk than the running session loaded (needs update and/or
+# restart). Pure local reads, no network. Depends on Claude Code's plugins/ layout
+# (.../plugins/cache/<mkt>/<plugin>/<ver> alongside .../plugins/marketplaces/<mkt>);
+# if that layout changes, every lookup silently misses and this stays quiet — it
+# never breaks the hook. Mode-independent: a stale install matters in code projects too.
+VERSION_MSG=""
+if [ "$version_warned" != "1" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
+  inst_ver=$(jq -r '.version // empty' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json" 2>/dev/null)
+  mkt=$(basename "$(dirname "$(dirname "$CLAUDE_PLUGIN_ROOT")")" 2>/dev/null)
+  plugins_base=$(dirname "$(dirname "$(dirname "$(dirname "$CLAUDE_PLUGIN_ROOT")")")" 2>/dev/null)
+  avail_ver=$(jq -r '.metadata.version // empty' "${plugins_base}/marketplaces/${mkt}/.claude-plugin/marketplace.json" 2>/dev/null)
+  if [ -n "$inst_ver" ] && [ -n "$avail_ver" ] && [ "$inst_ver" != "$avail_ver" ]; then
+    newer=$(printf '%s\n%s\n' "$inst_ver" "$avail_ver" | sort -V 2>/dev/null | tail -1)
+    if [ "$newer" = "$avail_ver" ]; then
+      VERSION_MSG="Jeeves ${inst_ver} is running but ${avail_ver} is available — run /plugin update jeeves@jeeves and restart Claude Code to load it."
+      version_warned=1
+    fi
+  fi
+fi
 
 # --- detect thinking-candidate; bootstrap once ---
 if [ "$bootstrapped" != "1" ]; then
@@ -96,10 +126,16 @@ fi
   echo "block_count=$block_count"
   echo "since=\"$since\""
   echo "last_commit_prompt=$last_commit_prompt"
+  echo "version_warned=$version_warned"
 } > "$STATE" 2>/dev/null || true
 
-if [ -n "$CTX" ]; then
-  ESC=$(printf '%s' "$CTX" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+# Version warning rides in front of any thinking-mode context, and emits on its
+# own even in code-mode projects (where CTX is empty).
+FULL_CTX="$CTX"
+[ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${CTX:+ }${CTX}"
+
+if [ -n "$FULL_CTX" ]; then
+  ESC=$(printf '%s' "$FULL_CTX" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
   printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' "$ESC"
   exit 0
 fi
