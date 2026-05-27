@@ -32,16 +32,25 @@ elif [ "$LOW_COUNT" -gt 0 ]; then
   DOC_MSG="Jeeves: ${LOW_COUNT} low-priority doc items (likely fine). Run /jeeves if you want to review."
 fi
 
-# Ride-along reminder: decision captures left uncommitted in thinking/ after a
-# commit that didn't include them. Counts only real capture files (not the empty
-# bootstrap dirs or INDEX alone), so we never nag about an empty thinking/. This
-# nudges captures to version alongside the work that produced them — never an
-# auto-commit, just a reminder at the moment the user is already committing.
+# Ride-along reminder: decision captures left uncommitted in thinking/. Three
+# guards learned from real use:
+#  - Suppressed in SUBAGENTS (agent_id/agent_type present): they never receive
+#    the thinking-mode protocol, so to them thinking/ is unaccountable untracked
+#    files and they rightly refuse — the nudge only confused/derailed them.
+#  - At most ONCE per session (marker keyed on session_id): no per-commit nagging.
+#  - Self-identifies thinking/ as Jeeves's own output so a context-light agent
+#    doesn't misread it as stray user files.
+# Counts only real capture files (not empty bootstrap dirs / INDEX alone).
 THINKING_MSG=""
-if [ -d thinking ]; then
+AGENT_CTX=$(echo "$INPUT" | jq -r '.agent_id // .agent_type // empty' 2>/dev/null)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+SAFE_ID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 80)
+REMINDED="/tmp/jeeves-${SAFE_ID}-thinking-reminded"
+if [ -z "$AGENT_CTX" ] && [ -n "$SAFE_ID" ] && [ ! -f "$REMINDED" ] && [ -d thinking ]; then
   CAP=$(git status --porcelain -uall -- thinking/ 2>/dev/null | grep -cE 'thinking/(decisions|topics|sessions)/.+\.md$')
   if [ "$CAP" -gt 0 ]; then
-    THINKING_MSG="Jeeves: ${CAP} decision capture(s) in thinking/ are uncommitted — run git add thinking/ to version them alongside your work."
+    THINKING_MSG="Jeeves has ${CAP} uncommitted decision record(s) in thinking/ — Jeeves's own capture output (safe to commit, not stray files). Run git add thinking/ to keep them with your work."
+    touch "$REMINDED" 2>/dev/null
   fi
 fi
 
