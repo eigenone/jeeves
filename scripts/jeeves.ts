@@ -1906,6 +1906,31 @@ function main() {
       if (newest > since) captured = true;
     }
 
+    // Registration-capture signals (v1: value-moment nudge for signup)
+    const REGISTRATION_PROMPT_THRESHOLD = 8;
+    const REGISTRATION_CAPTURE_THRESHOLD = 2;
+    let captureCount = 0;
+    if (exists(THINKING_DIR)) {
+      for (const d of ["decisions", "topics", "sessions"]) {
+        const dir = path.join(THINKING_DIR, d);
+        if (!exists(dir)) continue;
+        try { captureCount += fs.readdirSync(dir).filter(f => f.endsWith(".md")).length; } catch {}
+      }
+    }
+    const homeKey = path.join(process.env.HOME || "", ".jeeves", "key");
+    let keyPresent = false;
+    try {
+      if (exists(homeKey)) {
+        const k = fs.readFileSync(homeKey, "utf-8").trim();
+        keyPresent = k.length > 0;
+      }
+    } catch {}
+    const shouldOfferRegistration =
+      isThinking &&
+      captureCount >= REGISTRATION_CAPTURE_THRESHOLD &&
+      prompts >= REGISTRATION_PROMPT_THRESHOLD &&
+      !keyPresent;
+
     let head = "";
     try { head = run("git rev-parse HEAD 2>/dev/null").trim(); } catch {}
     // headChanged = a commit happened since the hook last recorded HEAD. The hook
@@ -1933,6 +1958,9 @@ function main() {
       shouldNudge,
       shouldBlock,
       captureTargets: ["thinking/decisions/", "thinking/INDEX.md"],
+      captureCount,
+      keyPresent,
+      shouldOfferRegistration,
     };
     process.stdout.write(JSON.stringify(payload));
     return;

@@ -27,7 +27,7 @@ JEEVES_SCRIPT="scripts/jeeves.ts"
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0
 # Sourcing the state file evaluates it as shell. Accepted: STATE path is keyed
 # on a sanitized session id under /tmp (sticky bit; same-UID only), and every
 # persisted value originates from controlled code (git SHA, ints, mtime float),
@@ -95,6 +95,18 @@ CAPTURED=$(printf '%s' "$CC" | jq -r '.captured // false' 2>/dev/null)
 # Spec: a fresh thinking/ write resets the escalation ladder to 0.
 [ "$CAPTURED" = "true" ] && nudge_level=0
 
+# --- Registration nudge (mid-session, once per session) ---
+# Emits a value-moment signup ask after enough captures + prompts accumulate
+# without a local key. Strict triggers in --capture-check; this just formats
+# the message and tracks the once-per-session marker.
+SHOULD_OFFER_REG=$(printf '%s' "$CC" | jq -r '.shouldOfferRegistration // false' 2>/dev/null)
+CAPTURE_COUNT=$(printf '%s' "$CC" | jq -r '.captureCount // 0' 2>/dev/null)
+REGISTRATION_MSG=""
+if [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
+  REGISTRATION_MSG="Jeeves has captured ${CAPTURE_COUNT} decisions for you. Sign up at trustjeeves.com (just an email) — you will get a weekly digest of your decisions, and early access to cross-project search and cross-machine sync as they ship. Already have a key? Run /jeeves:activate <key>."
+  signup_nudged=1
+fi
+
 CTX=""
 if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
   if [ "$layer1_injected" != "1" ]; then
@@ -127,12 +139,14 @@ fi
   echo "since=\"$since\""
   echo "last_commit_prompt=$last_commit_prompt"
   echo "version_warned=$version_warned"
+  echo "signup_nudged=$signup_nudged"
 } > "$STATE" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
 # own even in code-mode projects (where CTX is empty).
 FULL_CTX="$CTX"
-[ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${CTX:+ }${CTX}"
+[ -n "$REGISTRATION_MSG" ] && FULL_CTX="${REGISTRATION_MSG}${CTX:+ }${CTX}"
+[ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"
 
 if [ -n "$FULL_CTX" ]; then
   ESC=$(printf '%s' "$FULL_CTX" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
