@@ -11,6 +11,11 @@
 
 interface Env {
   DB: D1Database;
+  RESEND_API_KEY?: string;   // secret — wrangler secret put
+  BRAND_NAME?: string;        // var — e.g., "Jeeves"
+  SITE_URL?: string;          // var — e.g., "https://trustjeeves.com"
+  MAIL_FROM?: string;         // var — e.g., "Jeeves <hello@trustjeeves.com>"
+  MAIL_REPLY_TO?: string;     // var (optional) — overrides default reply-to
 }
 
 function generateApiKey(): string {
@@ -46,7 +51,7 @@ function json(data: unknown, status = 200): Response {
 
 // ── Signup ──────────────────────────────────────────────
 
-async function handleSignup(request: Request, env: Env): Promise<Response> {
+async function handleSignup(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const body = (await request.json()) as { email?: string; persona?: string };
 
   if (!body.email || !body.email.includes("@")) {
@@ -79,6 +84,13 @@ async function handleSignup(request: Request, env: Env): Promise<Response> {
   )
     .bind(body.email, apiKey, persona, trialExpires)
     .run();
+
+  // Welcome email — fire-and-forget so a Resend failure never blocks signup.
+  ctx.waitUntil(
+    sendWelcomeEmail(env, body.email, apiKey).then(r => {
+      if (!r.ok) console.error("welcome email failed:", r.error);
+    })
+  );
 
   return json({
     api_key: apiKey,
@@ -405,10 +417,65 @@ async function handleHealth(env: Env): Promise<Response> {
   });
 }
 
+// ── Welcome Email ────────────────────────────────────────
+
+async function sendWelcomeEmail(env: Env, toEmail: string, apiKey: string): Promise<{ ok: boolean; error?: string }> {
+  const RESEND_API_KEY = env.RESEND_API_KEY;
+  const BRAND = env.BRAND_NAME || "Jeeves";
+  const SITE_URL = (env.SITE_URL || "https://trustjeeves.com").replace(/\/$/, "");
+  const MAIL_FROM = env.MAIL_FROM || `${BRAND} <hello@${(() => { try { return new URL(SITE_URL).hostname; } catch { return "trustjeeves.com"; } })()}>`;
+  const MAIL_REPLY_TO = env.MAIL_REPLY_TO; // optional
+  if (!RESEND_API_KEY) return { ok: false, error: "RESEND_API_KEY not set" };
+
+  const subject = `Welcome to ${BRAND} — you are on the early list`;
+  const activateCmd = `/jeeves:activate ${apiKey}`;
+  const html = `
+<p>Welcome to ${BRAND} — you are on the early list.</p>
+<p>Your API key: <code>${apiKey}</code></p>
+<p>Activate in Claude Code:</p>
+<pre>${activateCmd}</pre>
+<p><strong>What is coming:</strong></p>
+<ul>
+  <li>Weekly digest of your captured decisions (starting in 1-2 weeks).</li>
+  <li>Cross-project search across everything you have thought about.</li>
+  <li>Cross-machine sync — your decisions follow you.</li>
+  <li>AI memory across projects — past decisions seed future agent context.</li>
+</ul>
+<p>We will email you when each ships. Reply with questions any time.</p>
+<p>— ${BRAND} (<a href="${SITE_URL}">${SITE_URL}</a>)</p>`;
+
+  const body: Record<string, unknown> = {
+    from: MAIL_FROM,
+    to: [toEmail],
+    subject,
+    html,
+  };
+  if (MAIL_REPLY_TO) body.reply_to = MAIL_REPLY_TO;
+
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      return { ok: false, error: `resend ${resp.status}: ${text.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
 // ── Router ──────────────────────────────────────────────
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -420,7 +487,7 @@ export default {
         return handleHealth(env);
       }
       if (url.pathname === "/signup" && request.method === "POST") {
-        return handleSignup(request, env);
+        return handleSignup(request, env, ctx);
       }
       if (url.pathname === "/check" && request.method === "POST") {
         return handleCheck(request, env);
