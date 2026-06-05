@@ -86,10 +86,12 @@ async function handleSignup(request: Request, env: Env, ctx: ExecutionContext): 
     .run();
 
   // Welcome email — fire-and-forget so a Resend failure never blocks signup.
+  // .catch defends the waitUntil chain against any future refactor that lets
+  // an uncaught throw escape sendWelcomeEmail's own try/catch.
   ctx.waitUntil(
-    sendWelcomeEmail(env, body.email, apiKey).then(r => {
-      if (!r.ok) console.error("welcome email failed:", r.error);
-    })
+    sendWelcomeEmail(env, body.email, apiKey)
+      .then(r => { if (!r.ok) console.error("welcome email failed:", r.error); })
+      .catch(e => console.error("welcome email threw:", e))
   );
 
   return json({
