@@ -233,22 +233,55 @@ function getGitChanges(): GitChanges {
   return { lastDocCommit, lastDocDate, changedCodeFiles, newCodeFiles, deletedCodeFiles, recentCommitMessages };
 }
 
+// ── Frontmatter parser ──────────────────────────────────────────────────────
+// Minimal YAML-frontmatter parser. Reads only keys we care about:
+// verified-at, status, superseded-by. Anything else is ignored.
+// Must start at line 1 with `---`; terminator must be `---` on its own line.
+// Anything that doesn't match: returns {}.
+
+type DocFrontmatter = {
+  verifiedAt?: string;
+  status?: string;
+  supersededBy?: string;
+};
+
+function parseFrontmatter(content: string): DocFrontmatter {
+  if (!content.startsWith("---\n")) return {};
+  const rest = content.slice(4);
+  const endIdx = rest.indexOf("\n---\n");
+  if (endIdx === -1) return {};
+  const block = rest.slice(0, endIdx);
+  const out: DocFrontmatter = {};
+  for (const line of block.split("\n")) {
+    const m = line.match(/^([a-zA-Z][a-zA-Z0-9-]*):\s*(.+?)\s*$/);
+    if (!m) continue;
+    const [, key, val] = m;
+    if (key === "verified-at") out.verifiedAt = val;
+    else if (key === "status") out.status = val;
+    else if (key === "superseded-by") out.supersededBy = val;
+  }
+  return out;
+}
+
 // ── Pattern analysis ─────────────────────────────────────────
 
-function getPatternFiles(): Map<string, string[]> {
-  // Map pattern doc name → files it references
-  const result = new Map<string, string[]>();
+type PatternDocInfo = { refs: string[]; fm: DocFrontmatter };
+
+function getPatternFiles(): Map<string, PatternDocInfo> {
+  // Map pattern doc name → { refs it references, frontmatter }
+  const result = new Map<string, PatternDocInfo>();
   if (!exists(PATTERNS_DIR)) return result;
 
   for (const file of fs.readdirSync(PATTERNS_DIR).filter(f => f.endsWith(".md"))) {
     const content = read(path.join(PATTERNS_DIR, file));
+    const fm = parseFrontmatter(content);
     const paths = [...content.matchAll(/`([a-zA-Z][a-zA-Z0-9_\-./]+\.[a-zA-Z]{1,6})`/g)]
       .map(m => m[1])
       .filter(p => !p.startsWith("http") && !p.startsWith("@") && p.includes("/"));
     // Dedupe — same ref can appear multiple times in a doc (in prose + code
     // block + table), and downstream callers (staleness check) treat refs as
     // a set, so duplicates only create redundant work and noisy previews.
-    result.set(file, [...new Set(paths)]);
+    result.set(file, { refs: [...new Set(paths)], fm });
   }
   return result;
 }
@@ -616,7 +649,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
   const newFeatureDirs = findNewFeatures(git.newCodeFiles);
   const patternFiles = getPatternFiles();
   const patternDirRefs = new Set<string>();
-  for (const [, refs] of patternFiles) {
+  for (const [, { refs }] of patternFiles) {
     for (const ref of refs) {
       patternDirRefs.add(path.dirname(ref));
     }
@@ -662,15 +695,33 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
   const isIgnoredForStaleness = (p: string) =>
     IGNORED_STALENESS_PATHS.some(ignored => p.includes(ignored));
 
-  for (const [patternFile, refs] of patternFiles) {
+  for (const [patternFile, { refs, fm }] of patternFiles) {
+    // Archived or superseded docs are excluded from staleness scanning entirely.
+    if (fm.status === "archived" || (fm.supersededBy && fm.supersededBy.length > 0)) continue;
+
     const docRelPath = `docs/internal/patterns/${patternFile}`;
 
-    // Get doc's last commit SHA and the files touched in that commit
-    const docLastSha = run(`git log -1 --format=%H -- "${docRelPath}" 2>/dev/null`);
-    if (!docLastSha) continue; // Not tracked by git — skip
+    // Get doc's last commit SHA — used for the fresh-together check (files
+    // co-committed with the doc are considered fresh regardless of anchor).
+    const docLastCommitSha = run(`git log -1 --format=%H -- "${docRelPath}" 2>/dev/null`);
+    if (!docLastCommitSha) continue; // Not tracked by git — skip
 
+    // Staleness anchor: defaults to the doc's own last commit, but overridden
+    // by verified-at frontmatter when present and valid. Falls back silently
+    // on garbage values (typos must not crash the lint pass).
+    let anchorSha = docLastCommitSha;
+    if (fm.verifiedAt && /^[0-9a-f]{7,64}$/i.test(fm.verifiedAt)) {
+      // verified-at is free-form YAML text any agent or human can write — validate
+      // it's a hex SHA before interpolating into a shell command. Subprocess cost
+      // is one extra spawn per opt-in doc; fine until adoption is widespread.
+      const verified = run(`git rev-parse --verify "${fm.verifiedAt}^{commit}" 2>/dev/null`);
+      if (verified) anchorSha = verified;
+    }
+
+    // Files co-committed with the doc's own last commit. If a ref appears here,
+    // it was updated together with the doc → still considered fresh (fresh-together rule).
     const docCommitFiles = new Set(
-      (run(`git show --name-only --format="" ${docLastSha} 2>/dev/null`) || "")
+      (run(`git show --name-only --format="" ${docLastCommitSha} 2>/dev/null`) || "")
         .split("\n")
         .filter(Boolean)
     );
@@ -680,18 +731,18 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       if (isIgnoredForStaleness(ref)) continue;
       if (!exists(path.join(ROOT, ref))) continue;
 
-      // Was this file modified AFTER the doc's last commit?
+      // Was this file modified AFTER the anchor commit?
       const refLastSha = run(`git log -1 --format=%H -- "${ref}" 2>/dev/null`);
-      if (!refLastSha || refLastSha === docLastSha) continue; // Same commit or not tracked
+      if (!refLastSha || refLastSha === anchorSha) continue; // Same commit or not tracked
 
-      // Get the latest commit subject for this ref since the doc's commit.
-      // Doubles as the "is there any commit after doc's" check (empty => no).
+      // Get the latest commit subject for this ref since the anchor commit.
+      // Doubles as the "is there any commit after anchor" check (empty => no).
       // Including the subject lets the reviewing agent judge whether the
       // change touched the documented surface without reading the diff.
-      const latestMsg = run(`git log -1 --format=%s ${docLastSha}..HEAD -- "${ref}" 2>/dev/null`);
-      if (!latestMsg) continue; // Ref wasn't changed after doc's commit
+      const latestMsg = run(`git log -1 --format=%s ${anchorSha}..HEAD -- "${ref}" 2>/dev/null`);
+      if (!latestMsg) continue; // Ref wasn't changed after anchor commit
 
-      // Was the ref also touched in the doc's commit? If so, they were updated together → fresh
+      // Was the ref also touched in the doc's own last commit? If so, they were updated together → fresh
       if (docCommitFiles.has(ref)) continue;
 
       staleRefs.push({ ref, latestMsg });
@@ -713,7 +764,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
     }
   }
 
-  // 5. Concept-index-based affected docs — DISABLED.
+  // Concept-index-based affected docs — DISABLED (legacy block; no section number).
   // Previously this fanned out "Review" actions for every doc tangentially
   // related to a changed file via shared concept headings. The correlation
   // is too loose to be useful: a doc that mentions "database" once gets
@@ -723,29 +774,24 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
   // precise, and rely on broken-path + overlap detection for structural
   // drift. Leave this block as a no-op documentation of the removed behavior.
 
-  // 4b. Also check direct file references in pattern docs (fallback for docs not in concept index)
-  for (const [patternFile, refs] of patternFiles) {
-    const staleRefs = refs.filter(ref =>
-      git.deletedCodeFiles.includes(ref) ||
-      git.changedCodeFiles.includes(ref)
-    );
-    if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
-      const deleted = staleRefs.filter(r => git.deletedCodeFiles.includes(r));
-      const changed = staleRefs.filter(r => git.changedCodeFiles.includes(r));
-      let desc = `Review patterns/${patternFile}`;
-      if (deleted.length) desc += ` — ${deleted.length} referenced files deleted`;
-      if (changed.length) desc += ` — ${changed.length} referenced files changed`;
-      actions.push({
-        type: "update",
-        target: `docs/internal/patterns/${patternFile}`,
-        description: desc,
-        priority: deleted.length > 0 ? "high" : "low",
-      });
+  // Section 4b removed in v4.5.1 — was a concept-index-era fallback that
+  // flagged docs on ANY referenced-file change without the fresh-together
+  // check. Section 4 (commit-grouping) subsumes it correctly.
+
+  // Build set of archived/superseded doc filenames for downstream skip.
+  const archivedPatternFiles = new Set<string>();
+  for (const [patternFile, { fm }] of patternFiles) {
+    if (fm.status === "archived" || (fm.supersededBy && fm.supersededBy.length > 0)) {
+      archivedPatternFiles.add(patternFile);
     }
   }
 
   // 5. Broken paths
-  const broken = findBrokenPaths();
+  // Archived/superseded docs are excluded — they may legitimately reference deleted files.
+  const broken = findBrokenPaths().filter(b => {
+    const docFile = path.basename(b.doc);
+    return !archivedPatternFiles.has(docFile);
+  });
   if (broken.length > 0) {
     actions.push({
       type: "fix",
@@ -756,7 +802,11 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
   }
 
   // 6. Unindexed docs
-  const unindexed = findUnindexedDocs();
+  // Archived/superseded docs are excluded from SYSTEM-MAP listing checks.
+  const unindexed = findUnindexedDocs().filter(u => {
+    const docFile = path.basename(u);
+    return !archivedPatternFiles.has(docFile);
+  });
   if (unindexed.length > 0) {
     actions.push({
       type: "update",
