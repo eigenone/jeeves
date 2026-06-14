@@ -7,11 +7,19 @@
  * How it works:
  * 1. Scans all docs for backtick-wrapped file paths
  * 2. For each broken path, tries to find the file:
- *    a. Check if the file was renamed (git log --diff-filter=R)
+ *    a. Check if the file was renamed (git log -M --name-status, v4.5.2 fix)
  *    b. Search for the filename in the project (maybe it moved directories)
  *    c. Search for similar filenames (typo detection)
  * 3. Reports findings with suggested fixes
- * 4. With --fix flag, automatically applies the fixes
+ * 4. With --fix flag, automatically applies the fixes — but ONLY for fixes
+ *    that pass the isAutoApplicable predicate (v4.5.2 safety guards):
+ *    - Trustworthy source: git-confirmed rename OR single unambiguous basename move
+ *    - Same package: suggestion stays within the same top-level package root
+ *    - No historical/negation marker on the line (retired, deleted, was, etc.)
+ *    - Not a historical doc (plans/, specs/, decisions/, sessions/, log.md, changelog.md)
+ *    - Not opted out (<!-- heal-docs:ignore --> on the line, or status:archived frontmatter)
+ *    Everything that fails any clause is downgraded to a report-only suggestion.
+ * 5. On apply, prints a before/after diff for each changed line.
  *
  * Usage:
  *   npx tsx scripts/heal-docs.ts           # Report mode (dry run)
@@ -73,36 +81,32 @@ function getBasename(p: string): string {
 /**
  * Try to find where a file was renamed to using git history.
  * Returns the new path if found, null otherwise.
+ *
+ * v4.5.2 fix: the old invocation (`git log --diff-filter=R --summary -- "*basename"`)
+ * was silently dead — the restrictive pathspec filters out the rename destination side
+ * so git cannot pair old→new and emits nothing. We now use `-M --name-status` without
+ * a pathspec and filter the results in JS, matching lines of the form:
+ *   R<score>\t<old-path>\t<new-path>
  */
 function findRenamedFile(oldPath: string): string | null {
   try {
-    // Check git log for renames involving this filename
     const basename = getBasename(oldPath);
+    // Do NOT pass a restrictive pathspec (`-- "*old.ts"`) — it filters out the
+    // rename's destination side, so git can't pair old->new and emits nothing.
+    // Scan renames via --name-status (R<score>\told\tnew); filter in JS.
     const output = execSync(
-      `git log --all --diff-filter=R --summary --format="" -- "*${basename}" 2>/dev/null | grep "rename" | head -5`,
+      `git log --all -M --diff-filter=R --name-status --format="" 2>/dev/null | head -2000`,
       { cwd: ROOT, encoding: "utf-8", timeout: 5000 }
     ).trim();
-
     if (!output) return null;
-
-    // Parse rename entries: "rename lib/{old.ts => new.ts} (100%)" or "rename lib/old.ts => lib/new.ts (95%)"
+    // git log is reverse-chronological, so the first match is the most recent.
     for (const line of output.split("\n")) {
-      // Look for the old path in the rename
-      if (line.includes(basename)) {
-        // Extract the "to" path from brace syntax: {old => new}
-        const braceMatch = line.match(/rename\s+(.+)\{(.+)\s+=>\s+(.+)\}\s+\((\d+)%\)/);
-        if (braceMatch) {
-          const prefix = braceMatch[1].trim();
-          const newName = braceMatch[3].trim();
-          const newPath = prefix + newName;
-          if (fs.existsSync(path.join(ROOT, newPath))) return newPath;
-        }
-        // Extract from arrow syntax: old => new
-        const arrowMatch = line.match(/rename\s+(.+)\s+=>\s+(.+)\s+\((\d+)%\)/);
-        if (arrowMatch) {
-          const newPath = arrowMatch[2].trim();
-          if (fs.existsSync(path.join(ROOT, newPath))) return newPath;
-        }
+      const parts = line.split("\t");
+      if (parts.length < 3 || !parts[0].startsWith("R")) continue;
+      const oldRenamed = parts[1].trim();
+      const newRenamed = parts[2].trim();
+      if (oldRenamed === oldPath || getBasename(oldRenamed) === basename) {
+        if (fs.existsSync(path.join(ROOT, newRenamed))) return newRenamed;
       }
     }
   } catch {
@@ -167,6 +171,55 @@ function findSimilarFiles(oldPath: string): string[] {
   return results;
 }
 
+// ── Safety guards (v4.5.2) ──────────────────────────────────────────
+// heal-docs auto-applied confidently-wrong edits (UBQT 2026-06-14). These
+// guards narrow the auto-applicable set so meaning-inverting / cross-package
+// rewrites become report-only suggestions instead of silent edits.
+
+const HISTORICAL_MARKER =
+  /\b(retired|deleted|removed|legacy|former|formerly|deprecated|obsolete|old|pre-migration|no longer|used to|previously|replaced|superseded|was|were)\b/i;
+
+const PACKAGE_PREFIXES = new Set(["apps", "packages", "services", "libs", "modules"]);
+
+function packageRoot(p: string): string {
+  const segs = p.split("/");
+  if (PACKAGE_PREFIXES.has(segs[0]) && segs.length >= 2) return segs[0] + "/" + segs[1];
+  return segs[0];
+}
+
+function crossesPackage(broken: string, suggestion: string): boolean {
+  return packageRoot(broken) !== packageRoot(suggestion);
+}
+
+function hasHistoricalMarker(line: string): boolean {
+  return HISTORICAL_MARKER.test(line);
+}
+
+function hasIgnoreMarker(line: string): boolean {
+  return line.includes("<!-- heal-docs:ignore -->");
+}
+
+function isHistoricalDoc(relDocPath: string): boolean {
+  const base = path.basename(relDocPath).toLowerCase();
+  if (base === "log.md" || base === "changelog.md") return true;
+  return /\/(plans|specs|decisions|sessions)\//.test("/" + relDocPath.replace(/\\/g, "/"));
+}
+
+function docIsArchived(fullDocPath: string): boolean {
+  let c: string;
+  try { c = fs.readFileSync(fullDocPath, "utf-8"); } catch { return false; }
+  if (!c.startsWith("---\n")) return false;
+  const end = c.slice(4).indexOf("\n---\n");
+  if (end === -1) return false;
+  for (const line of c.slice(4, 4 + end).split("\n")) {
+    const m = line.match(/^(status|superseded-by):\s*(.+?)\s*$/);
+    if (!m) continue;
+    if (m[1] === "status" && m[2].trim() === "archived") return true;
+    if (m[1] === "superseded-by" && m[2].trim().length > 0) return true;
+  }
+  return false;
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
 interface BrokenRef {
@@ -176,6 +229,8 @@ interface BrokenRef {
   suggestion: string | null;  // suggested fix
   confidence: "high" | "medium" | "low";
   source: "renamed" | "moved" | "similar" | "none";
+  lineText: string;      // raw line, for marker + ignore checks and diff output
+  docArchived: boolean;  // frontmatter status:archived / superseded-by
 }
 
 function main() {
@@ -193,6 +248,8 @@ function main() {
     const content = fs.readFileSync(docFile, "utf-8");
     const lines = content.split("\n");
     const relDoc = path.relative(ROOT, docFile);
+    // Compute once per doc — recomputing frontmatter per line is wasteful.
+    const archived = docIsArchived(docFile);
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -275,6 +332,8 @@ function main() {
             suggestion,
             confidence,
             source,
+            lineText: line,
+            docArchived: archived,
           });
         }
       }
@@ -282,6 +341,29 @@ function main() {
   }
 
   // ── Report ──────────────────────────────────────────────────────
+
+  // A fix is auto-applied ONLY if it is trustworthy AND safe on every axis.
+  // Everything else is downgraded to a report-only suggestion.
+  function isAutoApplicable(b: BrokenRef): boolean {
+    if (!b.suggestion) return false;
+    // 1. Trustworthy source: git rename, or a single unambiguous same-name move.
+    const trustworthy = b.source === "renamed" || (b.source === "moved" && b.confidence === "high");
+    if (!trustworthy) return false;
+    // 2. Never cross a package/app boundary.
+    if (crossesPackage(b.brokenPath, b.suggestion)) return false;
+    // 3. Never rewrite a path described as historical/retired.
+    //    Strip the broken path from the line before checking so that tokens
+    //    in the filename itself (e.g. "old" in "scripts/old.ts") don't trigger
+    //    the marker — only prose words matter.
+    const lineWithoutPath = b.lineText.replace(`\`${b.brokenPath}\``, "");
+    if (hasHistoricalMarker(lineWithoutPath)) return false;
+    // 4. Never auto-edit append-only logs or dated plan/spec/decision/session docs.
+    if (isHistoricalDoc(b.docPath)) return false;
+    // 5. Honor explicit opt-out (line marker or archived/superseded frontmatter).
+    if (hasIgnoreMarker(b.lineText)) return false;
+    if (b.docArchived) return false;
+    return true;
+  }
 
   console.log("=== Heal Docs Report ===\n");
   console.log(`Scanned: ${docFiles.length} docs, ${totalPaths} paths`);
@@ -295,8 +377,8 @@ function main() {
   }
 
   // Group by fixability
-  const autoFixable = broken.filter(b => b.suggestion && b.confidence === "high");
-  const suggestable = broken.filter(b => b.suggestion && b.confidence !== "high");
+  const autoFixable = broken.filter(isAutoApplicable);
+  const suggestable = broken.filter(b => b.suggestion && !isAutoApplicable(b));
   const unfixable = broken.filter(b => !b.suggestion);
 
   if (autoFixable.length > 0) {
@@ -340,17 +422,24 @@ function main() {
 
     for (const [docPath, fixes] of fixesByDoc) {
       const fullPath = path.join(ROOT, docPath);
-      let content = fs.readFileSync(fullPath, "utf-8");
+      const lines = fs.readFileSync(fullPath, "utf-8").split("\n");
 
+      // Rewrite by line index, not whole-file string-replace: the same broken
+      // path can appear on multiple lines, and a string `content.replace` only
+      // hits the first occurrence — which would partially apply and make the
+      // printed diff diverge from what's actually written.
       for (const fix of fixes) {
-        // Replace the old path with the new path (within backticks)
         const oldRef = `\`${fix.brokenPath}\``;
         const newRef = `\`${fix.suggestion}\``;
-        content = content.replace(oldRef, newRef);
-        console.log(`  Fixed: ${fix.brokenPath} → ${fix.suggestion} in ${docPath}`);
+        const idx = fix.lineNumber - 1;
+        const newLine = lines[idx].replace(oldRef, newRef);
+        lines[idx] = newLine;
+        console.log(`  ${fix.docPath}:${fix.lineNumber}`);
+        console.log(`    - ${fix.lineText.trim()}`);
+        console.log(`    + ${newLine.trim()}`);
       }
 
-      fs.writeFileSync(fullPath, content);
+      fs.writeFileSync(fullPath, lines.join("\n"));
     }
 
     console.log(`\nDone. ${autoFixable.length} paths fixed across ${fixesByDoc.size} files.`);
