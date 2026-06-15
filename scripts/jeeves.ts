@@ -263,6 +263,54 @@ function parseFrontmatter(content: string): DocFrontmatter {
   return out;
 }
 
+// ── Staleness ref filtering + content-awareness (v4.6.0) ─────────────
+// Non-source refs that should never be tracked as staleness dependencies
+// (they still participate in broken-path/link checks elsewhere).
+const STALENESS_SKIP_BASENAMES = new Set([
+  "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+  "bun.lockb", "cargo.lock", "go.sum", "go.mod", "composer.json", "gemfile.lock",
+]);
+function isNonSourceStalenessRef(p: string): boolean {
+  if (p.endsWith(".md")) return true;                 // doc-to-doc / self mentions
+  const base = path.basename(p).toLowerCase();
+  if (STALENESS_SKIP_BASENAMES.has(base)) return true; // high-churn manifests
+  if (/^tsconfig.*\.json$/.test(base)) return true;
+  if (/\.config\.(js|ts|mjs|cjs)$/.test(base)) return true;
+  return false;
+}
+
+const JS_TS_EXT = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+
+// Cheap regex extraction of a module's exported identifier set. Not an AST —
+// the reporter explicitly accepts a heuristic; the safe direction is to flag
+// when unsure (opaque), never to silently suppress.
+function extractExports(src: string): { names: Set<string>; opaque: boolean } {
+  const names = new Set<string>();
+  const opaque = /export\s+\*/.test(src);
+  const declRe = /export\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\*?|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = declRe.exec(src)) !== null) names.add(m[1]);
+  const braceRe = /export\s*\{([^}]*)\}/g;
+  while ((m = braceRe.exec(src)) !== null) {
+    for (const part of m[1].split(",")) {
+      const seg = part.trim();
+      if (!seg) continue;
+      const asMatch = seg.match(/\bas\s+([A-Za-z_$][\w$]*)\s*$/);
+      if (asMatch) { names.add(asMatch[1]); continue; }
+      const nameMatch = seg.match(/^([A-Za-z_$][\w$]*)/);
+      if (nameMatch) names.add(nameMatch[1]);
+    }
+  }
+  if (/export\s+default\b/.test(src)) names.add("default");
+  return { names, opaque };
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
 // ── Pattern analysis ─────────────────────────────────────────
 
 type PatternDocInfo = { refs: string[]; fm: DocFrontmatter };
@@ -726,41 +774,63 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
         .filter(Boolean)
     );
 
-    const staleRefs: Array<{ ref: string; latestMsg: string }> = [];
+    const docText = read(path.join(ROOT, docRelPath));
+    type StaleRef = { ref: string; latestMsg: string; severity: "high" | "medium" | "low"; removed?: string };
+    const staleRefs: StaleRef[] = [];
     for (const ref of refs) {
-      if (isIgnoredForStaleness(ref)) continue;
+      if (isIgnoredForStaleness(ref) || isNonSourceStalenessRef(ref)) continue;  // R1
       if (!exists(path.join(ROOT, ref))) continue;
 
-      // Was this file modified AFTER the anchor commit?
       const refLastSha = run(`git log -1 --format=%H -- "${ref}" 2>/dev/null`);
-      if (!refLastSha || refLastSha === anchorSha) continue; // Same commit or not tracked
-
-      // Get the latest commit subject for this ref since the anchor commit.
-      // Doubles as the "is there any commit after anchor" check (empty => no).
-      // Including the subject lets the reviewing agent judge whether the
-      // change touched the documented surface without reading the diff.
+      if (!refLastSha || refLastSha === anchorSha) continue;
       const latestMsg = run(`git log -1 --format=%s ${anchorSha}..HEAD -- "${ref}" 2>/dev/null`);
-      if (!latestMsg) continue; // Ref wasn't changed after anchor commit
+      if (!latestMsg) continue;
+      if (docCommitFiles.has(ref)) continue;  // fresh-together
 
-      // Was the ref also touched in the doc's own last commit? If so, they were updated together → fresh
-      if (docCommitFiles.has(ref)) continue;
-
-      staleRefs.push({ ref, latestMsg });
+      // R3/R4: content-aware delta for JS/TS refs.
+      if (JS_TS_EXT.test(ref)) {
+        const headSrc = (() => { try { return fs.readFileSync(path.join(ROOT, ref), "utf-8"); } catch { return ""; } })();
+        const anchorSrc = run(`git show ${anchorSha}:"${ref}" 2>/dev/null`);
+        const headEx = extractExports(headSrc);
+        const anchorEx = extractExports(anchorSrc);
+        if (!headEx.opaque && !anchorEx.opaque) {
+          if (setsEqual(anchorEx.names, headEx.names)) continue; // exports unchanged → not stale
+          // exports changed: high if the doc still names a removed symbol.
+          let removed: string | undefined;
+          for (const name of anchorEx.names) {
+            if (name === "default") continue;
+            if (!headEx.names.has(name) && new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(docText)) {
+              removed = name; break;
+            }
+          }
+          staleRefs.push(removed
+            ? { ref, latestMsg, severity: "high", removed }
+            : { ref, latestMsg, severity: "medium" });
+        } else {
+          // opaque (export *): can't verify → quiet.
+          staleRefs.push({ ref, latestMsg, severity: "low" });
+        }
+      } else {
+        // non-JS/TS: timestamp behavior retained, quiet.
+        staleRefs.push({ ref, latestMsg, severity: "low" });
+      }
     }
 
     if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
-      // 1 changed ref is often a false positive (implementation change that doesn't
-      // affect the doc's claims). 2+ is more likely real drift. Use priority to
-      // distinguish: low = informational, medium = likely real.
       const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + "…" : s;
-      const top = staleRefs.slice(0, 3).map(r => `${r.ref} ("${truncate(r.latestMsg, 50)}")`);
-      const more = staleRefs.length > 3 ? ` (+${staleRefs.length - 3} more)` : "";
-      actions.push({
-        type: "update",
-        target: docRelPath,
-        description: `Stale — ${staleRefs.length} ref(s) changed since doc: ${top.join(", ")}${more}`,
-        priority: staleRefs.length >= 2 ? "medium" : "low",
-      });
+      const rank = { high: 3, medium: 2, low: 1 } as const;
+      const priority = staleRefs.reduce<"high" | "medium" | "low">(
+        (acc, r) => rank[r.severity] > rank[acc] ? r.severity : acc, "low");
+      const highRef = staleRefs.find(r => r.severity === "high");
+      let description: string;
+      if (highRef) {
+        description = `Stale (HIGH) — doc references removed symbol '${highRef.removed}' — ${highRef.ref} ("${truncate(highRef.latestMsg, 50)}")`;
+      } else {
+        const top = staleRefs.slice(0, 3).map(r => `${r.ref} ("${truncate(r.latestMsg, 50)}")`);
+        const more = staleRefs.length > 3 ? ` (+${staleRefs.length - 3} more)` : "";
+        description = `Stale — ${staleRefs.length} ref(s) changed since doc: ${top.join(", ")}${more}`;
+      }
+      actions.push({ type: "update", target: docRelPath, description, priority });
     }
   }
 
