@@ -311,6 +311,33 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
+const PY_EXT = /\.pyi?$/;
+
+// Python public surface: module-level (column-0) def/async def/class names, plus
+// any names declared in __all__. Conservative — a wildcard re-export marks the
+// module opaque so we flag rather than risk a false negative. Same safe direction
+// as extractExports: when unsure, flag; never silently suppress.
+function extractPythonSurface(src: string): { names: Set<string>; opaque: boolean } {
+  const names = new Set<string>();
+  const opaque = /^from\s+[.\w]+\s+import\s+\*/m.test(src);
+  const declRe = /^(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/gm; // column-0 only
+  let m: RegExpExecArray | null;
+  while ((m = declRe.exec(src)) !== null) names.add(m[1]);
+  const allMatch = src.match(/__all__\s*(?::[^=]+)?=\s*[\[(]([\s\S]*?)[\])]/);
+  if (allMatch) {
+    for (const q of allMatch[1].matchAll(/['"]([A-Za-z_]\w*)['"]/g)) names.add(q[1]);
+  }
+  return { names, opaque };
+}
+
+// Pick the public-surface extractor for a ref's language, or null when we have no
+// content-aware extractor (those refs fall back to timestamp behavior at low).
+function surfaceExtractorFor(ref: string): ((src: string) => { names: Set<string>; opaque: boolean }) | null {
+  if (JS_TS_EXT.test(ref)) return extractExports;
+  if (PY_EXT.test(ref)) return extractPythonSurface;
+  return null;
+}
+
 // ── Pattern analysis ─────────────────────────────────────────
 
 type PatternDocInfo = { refs: string[]; fm: DocFrontmatter };
@@ -787,12 +814,14 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       if (!latestMsg) continue;
       if (docCommitFiles.has(ref)) continue;  // fresh-together
 
-      // R3/R4: content-aware delta for JS/TS refs.
-      if (JS_TS_EXT.test(ref)) {
+      // R3/R4: content-aware delta for languages we can extract a public surface
+      // from (JS/TS, Python). Everything else falls back to timestamp behavior.
+      const extractor = surfaceExtractorFor(ref);
+      if (extractor) {
         const headSrc = (() => { try { return fs.readFileSync(path.join(ROOT, ref), "utf-8"); } catch { return ""; } })();
         const anchorSrc = run(`git show ${anchorSha}:"${ref}" 2>/dev/null`);
-        const headEx = extractExports(headSrc);
-        const anchorEx = extractExports(anchorSrc);
+        const headEx = extractor(headSrc);
+        const anchorEx = extractor(anchorSrc);
         if (!headEx.opaque && !anchorEx.opaque) {
           if (setsEqual(anchorEx.names, headEx.names)) continue; // exports unchanged → not stale
           // exports changed: high if the doc still names a removed symbol.
@@ -811,7 +840,8 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
           staleRefs.push({ ref, latestMsg, severity: "low" });
         }
       } else {
-        // non-JS/TS: timestamp behavior retained, quiet.
+        // No surface extractor for this language (SQL/Go/Prisma/etc.):
+        // timestamp behavior retained, quiet.
         staleRefs.push({ ref, latestMsg, severity: "low" });
       }
     }
