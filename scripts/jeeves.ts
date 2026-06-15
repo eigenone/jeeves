@@ -2169,10 +2169,28 @@ function main() {
     }
   }
 
-  // Auto-heal broken paths if heal-docs.ts exists
-  const healScript = path.join(ROOT, "scripts", "heal-docs.ts");
-  if (exists(healScript)) {
-    const healResult = run("npx tsx scripts/heal-docs.ts --fix 2>&1 | tail -3", { timeout: 30000 });
+  // Auto-heal broken paths. PREFER the plugin's heal-docs.ts over any
+  // project-local scripts/heal-docs.ts: a plugin update cannot refresh a copy
+  // committed into the user's repo, so a stale local copy would keep running
+  // pre-safety-guard logic (the kind that made meaning-inverting edits) on every
+  // sync. The plugin copy is always current. heal-docs reads process.cwd() for
+  // the project root and run() execs with cwd=ROOT, so an absolute plugin path
+  // still scans THIS project's docs. Fall back to a local copy only when there's
+  // no plugin root (toolkit-only installs that vendored the scripts in).
+  const localHeal = path.join(ROOT, "scripts", "heal-docs.ts");
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const pluginHeal = pluginRoot ? path.join(pluginRoot, "scripts", "heal-docs.ts") : "";
+  let healToRun = "";
+  if (pluginHeal && exists(pluginHeal)) {
+    healToRun = pluginHeal;
+    if (exists(localHeal)) {
+      console.log("ℹ️  Auto-heal is using the plugin's heal-docs.ts; your repo's scripts/heal-docs.ts is bypassed (safe to delete — see README \"Updating\").");
+    }
+  } else if (exists(localHeal)) {
+    healToRun = localHeal;
+  }
+  if (healToRun) {
+    const healResult = run(`npx tsx ${JSON.stringify(healToRun)} --fix 2>&1 | tail -3`, { timeout: 30000 });
     if (healResult.includes("fixed")) {
       console.log(`🔧 ${healResult.trim()}`);
     }
