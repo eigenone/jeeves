@@ -39,6 +39,16 @@ Then reload: `/reload-plugins`
 | `/jeeves:archive` | Stash thinking, start fresh |
 | `/jeeves:extract` | File back knowledge from conversation |
 
+## Updating
+
+```
+/plugin update jeeves@eigenone-jeeves
+```
+
+Then **restart Claude Code** — a running session keeps the old plugin code loaded until it reloads. Jeeves prints a one-line warning when the version on disk is newer than the session loaded.
+
+**If your repo has its own `scripts/` copies of Jeeves** (run `git ls-files | grep scripts/heal-docs.ts` — if it prints a path, you do), note that a plugin update only refreshes the copy *inside the plugin*, not files committed to your repo. The slash commands always use the upgraded plugin copy, but the auto-heal step on a `/jeeves` sync prefers your local `scripts/heal-docs.ts` when present. After updating, either `rm scripts/heal-docs.ts` (recommended — it then falls back to the plugin copy) or re-copy the script in so your local version matches. Updates change future behavior only; they don't revert edits an older version already wrote.
+
 ## Free vs Pro
 
 Free (forever): `/jeeves`, `/jeeves:end`, `/jeeves:summary`
