@@ -66,6 +66,17 @@ const SKIP_PATH_PATTERNS = [
   /^[A-Z_]+$/, // constants (ALL_CAPS)
 ];
 
+// Known source/asset/config extensions. A backtick token is treated as a file
+// reference only when it is path-shaped (contains "/", not a leading-slash URL
+// route) AND ends in one of these. This kills the false-positive classes that
+// otherwise block pushes on healthy docs (UBQT report 2026-07-04): URL routes
+// (`/flows`), schema.table identifiers (`events.outbox`), bare filenames used as
+// concepts (`route.ts`), template placeholders (`<workspaceId>`), and example
+// hostnames (`pages.acme.com`). Kept broad across languages so the check still
+// catches real refs in non-JS repos (Go/Python/Rust/etc.).
+const SOURCE_EXT =
+  /\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css|scss|sass|less|md|mdx|prisma|sh|bash|zsh|sql|ya?ml|toml|ini|env|html|xml|svg|png|jpe?g|gif|webp|ico|py|rb|go|rs|java|kt|kts|swift|c|cc|cpp|cxx|h|hpp|cs|php|vue|svelte|astro|tf|gradle|txt|csv|proto|graphql|gql)$/i;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function exists(filePath: string): boolean {
@@ -77,9 +88,15 @@ function readFile(filePath: string): string {
 }
 
 /**
- * Extract all backtick-wrapped paths from a markdown string.
- * Matches: `path/to/file.ts`, `app/api/route.ts`, etc.
- * Skips: inline code that doesn't look like a file path.
+ * Extract all backtick-wrapped file paths from a markdown string.
+ * Matches path-shaped source refs: `path/to/file.ts`, `app/api/route.ts`.
+ * Deliberately does NOT match bare filenames (`route.ts`), URL routes (`/flows`),
+ * schema.table identifiers (`events.outbox`), placeholders (`<id>`), or hostnames
+ * (`pages.acme.com`) — these are common non-file backtick tokens and flagging them
+ * produces false positives that block the pre-push gate on healthy docs.
+ * A token qualifies only if it contains "/" (and isn't a leading-slash route) and
+ * ends in a known source/asset/config extension (SOURCE_EXT), optionally with a
+ * :line[:col] suffix.
  */
 function extractFilePaths(markdown: string): string[] {
   const matches = markdown.matchAll(/`([^`]+)`/g);
@@ -87,16 +104,21 @@ function extractFilePaths(markdown: string): string[] {
 
   for (const match of matches) {
     const candidate = match[1];
-    // Heuristic: looks like a file path if it contains a slash or a dot extension
+    if (candidate === undefined) continue;
+    const cleanish = candidate.replace(/:\d+(:\d+)?$/, ""); // strip :line[:col] before shape checks
+
     const looksLikePath =
-      (candidate.includes("/") || /\.\w{2,6}$/.test(candidate)) &&
-      !SKIP_PATH_PATTERNS.some((p) => p.test(candidate)) &&
-      !candidate.includes(" ") && // no spaces in file paths
-      !candidate.includes("(") && // not a function call
-      candidate.length < 200;
+      cleanish.includes("/") && // path-shaped (excludes bare `route.ts`, `events.outbox`)
+      !cleanish.startsWith("/") && // excludes URL routes (/api/..., /flows)
+      SOURCE_EXT.test(cleanish) && // ends in a real source/asset/config extension
+      !SKIP_PATH_PATTERNS.some((p) => p.test(cleanish)) &&
+      !cleanish.includes(" ") && // no spaces in file paths
+      !cleanish.includes("(") && // not a function call
+      !cleanish.includes("<") && // excludes placeholder tokens like /p/<id>/<slug>
+      cleanish.length < 200;
 
     if (looksLikePath) {
-      paths.push(candidate);
+      paths.push(candidate); // keep raw candidate; the existence check strips :line[:col]
     }
   }
 
