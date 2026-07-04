@@ -20,9 +20,17 @@ STATE="/tmp/jeeves-${SAFE_ID}"
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
 
-# Resolve jeeves.ts: project first, then plugin root.
-JEEVES_SCRIPT="scripts/jeeves.ts"
-[ -f "$JEEVES_SCRIPT" ] || JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+# Resolve jeeves.ts: PREFER the plugin's copy over a project-local scripts/jeeves.ts.
+# A plugin update cannot refresh a copy committed into the user's repo, so a stale
+# local copy keeps running old logic on every prompt — and pre-4.6 versions are
+# pathologically slow (~35s for --capture-check), which blows this hook's timeout.
+# Mirror the v4.5.3 auto-heal precedent (prefer plugin over stale local). Fall back
+# to a project-local copy only when there is no plugin root (toolkit-only installs).
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+else
+  JEEVES_SCRIPT="scripts/jeeves.ts"
+fi
 [ -f "$JEEVES_SCRIPT" ] || emit_empty
 
 # --- state load (key=value; fail-open to zeros) ---

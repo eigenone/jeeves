@@ -1,7 +1,7 @@
 {
   "name": "jeeves",
   "description": "Your AI doesn't remember. Jeeves does. Session memory and living documentation for Claude Code.",
-  "version": "4.6.1",
+  "version": "4.6.2",
   "author": {
     "name": "Jeeves",
     "email": "support@trustjeeves.com"

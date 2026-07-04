@@ -8,9 +8,14 @@ if ! echo "$COMMAND" | grep -q "git push"; then
   exit 0
 fi
 
-# Run lint if script exists (check project first, then plugin root)
-LINT_SCRIPT="scripts/lint-docs.ts"
-[ -f "$LINT_SCRIPT" ] || LINT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts"
+# Prefer the plugin's lint-docs.ts over a stale project-local copy (mirrors the
+# jeeves.ts resolution in session-check.sh — a plugin update can't refresh a copy
+# committed into the repo). Fall back to local only when there's no plugin root.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts" ]; then
+  LINT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts"
+else
+  LINT_SCRIPT="scripts/lint-docs.ts"
+fi
 if [ -f "$LINT_SCRIPT" ]; then
   npx tsx "$LINT_SCRIPT" > /dev/null 2>&1
   if [ $? -ne 0 ]; then

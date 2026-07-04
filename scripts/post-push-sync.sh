@@ -10,8 +10,13 @@ fi
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) post_push project=$(basename "$(pwd)")" >> "${HOME}/.jeeves-usage.log" 2>/dev/null
 
-JEEVES_SCRIPT="scripts/jeeves.ts"
-[ -f "$JEEVES_SCRIPT" ] || JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+# Prefer the plugin's jeeves.ts over a stale project-local copy (see session-check.sh
+# for rationale; a stale local copy can be ~35s and blow this hook's timeout).
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+else
+  JEEVES_SCRIPT="scripts/jeeves.ts"
+fi
 [ -f "$JEEVES_SCRIPT" ] || { echo '{}'; exit 0; }
 
 # Structured actions (report-only: --stale returns before the sync auto-heal).
