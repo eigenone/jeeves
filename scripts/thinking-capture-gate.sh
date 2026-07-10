@@ -19,14 +19,20 @@ STATE="/tmp/jeeves-${SAFE_ID}"
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
 
-# Prefer the plugin's jeeves.ts over a stale project-local copy (see session-check.sh
-# for rationale; a stale local copy can be ~35s and blow this hook's timeout).
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
-  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+# Resolve the engine (see session-check.sh for the full rationale): prefer the plugin
+# copy over a stale project-local one, and prefer the prebuilt jeeves.cjs (node) over
+# jeeves.ts (tsx). Array form is space-safe; fall back to tsx when no .cjs exists.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
+  JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts")
+elif [ -f "scripts/jeeves.cjs" ]; then
+  JEEVES=(node scripts/jeeves.cjs)
+elif [ -f "scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx scripts/jeeves.ts)
 else
-  JEEVES_SCRIPT="scripts/jeeves.ts"
+  allow
 fi
-[ -f "$JEEVES_SCRIPT" ] || allow
 
 prompts=0; last_block_turn=0; block_count=0; head_at_last_check=""; since=""; last_commit_prompt=0
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
@@ -44,7 +50,7 @@ turn=$prompts
 # consistent between the nudge and the gate. If the gate somehow fires before
 # session-check ran (no state), since="" -> 0 and last_commit_prompt=0 (no
 # deferral) — conservative defaults.
-CC=$(npx tsx "$JEEVES_SCRIPT" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
+CC=$("${JEEVES[@]}" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
 [ -z "$CC" ] && allow
 SHOULD_BLOCK=$(printf '%s' "$CC" | jq -r '.shouldBlock // false' 2>/dev/null)
 [ "$SHOULD_BLOCK" != "true" ] && allow

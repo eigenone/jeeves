@@ -15,19 +15,31 @@ printf '%s' "$COMMAND" | grep -Eq '(^|[;&|[:space:]])git([[:space:]]+-[^[:space:
 TOOL_OK=$(printf '%s' "$INPUT" | jq -r '(.tool_response.success // .tool_response.exit_code // empty)' 2>/dev/null)
 case "$TOOL_OK" in false|[1-9]*) echo '{}'; exit 0 ;; esac
 
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) post_push project=$(basename "$(pwd)")" >> "${HOME}/.jeeves-usage.log" 2>/dev/null
+# Run from the session's project root if the hook provided one (parity with
+# session-check) — a subdir session would otherwise analyze the wrong root, and the
+# push-state file below would land in the wrong place.
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$CWD" ] && cd "$CWD" 2>/dev/null
+[ -n "$CWD" ] || CWD="$(pwd)"
 
-# Prefer the plugin's jeeves.ts over a stale project-local copy (see session-check.sh
-# for rationale; a stale local copy can be ~35s and blow this hook's timeout).
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
-  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) post_push project=$(basename "$CWD")" >> "${HOME}/.jeeves-usage.log" 2>/dev/null
+
+# Resolve the engine (see session-check.sh): prefer plugin over stale local, and the
+# prebuilt jeeves.cjs (node) over jeeves.ts (tsx); fall back to tsx when no .cjs.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
+  JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts")
+elif [ -f "scripts/jeeves.cjs" ]; then
+  JEEVES=(node scripts/jeeves.cjs)
+elif [ -f "scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx scripts/jeeves.ts)
 else
-  JEEVES_SCRIPT="scripts/jeeves.ts"
+  echo '{}'; exit 0
 fi
-[ -f "$JEEVES_SCRIPT" ] || { echo '{}'; exit 0; }
 
 # Structured actions (report-only: --stale returns before the sync auto-heal).
-JSON=$(npx tsx "$JEEVES_SCRIPT" --stale --json 2>/dev/null)
+JSON=$("${JEEVES[@]}" "$CWD" --stale --json 2>/dev/null)
 [ -z "$JSON" ] && { echo '{}'; exit 0; }
 
 # Stable signature per action (type|target|priority) — deliberately excludes the

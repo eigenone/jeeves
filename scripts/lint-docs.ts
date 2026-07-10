@@ -46,6 +46,7 @@
 
 import fs from "fs";
 import path from "path";
+import { extractFileRefs, stripLineSuffix } from "./ref-extract";
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -55,27 +56,8 @@ const SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
 const PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 const DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
 
-// Paths that are intentionally relative references (skip these in path checks)
-const SKIP_PATH_PATTERNS = [
-  /^https?:\/\//, // URLs
-  /^#/, // anchor links
-  /^\.\.\//, // relative parent refs
-  /^@/, // npm scoped packages (@auth/prisma-adapter, @modelcontextprotocol/sdk)
-  /^node:/, // Node.js built-in modules
-  /^\$/, // shell variables ($CLAUDE_PROJECT_DIR)
-  /^[A-Z_]+$/, // constants (ALL_CAPS)
-];
-
-// Known source/asset/config extensions. A backtick token is treated as a file
-// reference only when it is path-shaped (contains "/", not a leading-slash URL
-// route) AND ends in one of these. This kills the false-positive classes that
-// otherwise block pushes on healthy docs (UBQT report 2026-07-04): URL routes
-// (`/flows`), schema.table identifiers (`events.outbox`), bare filenames used as
-// concepts (`route.ts`), template placeholders (`<workspaceId>`), and example
-// hostnames (`pages.acme.com`). Kept broad across languages so the check still
-// catches real refs in non-JS repos (Go/Python/Rust/etc.).
-const SOURCE_EXT =
-  /\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css|scss|sass|less|md|mdx|prisma|sh|bash|zsh|sql|ya?ml|toml|ini|env|html|xml|svg|png|jpe?g|gif|webp|ico|py|rb|go|rs|java|kt|kts|swift|c|cc|cpp|cxx|h|hpp|cs|php|vue|svelte|astro|tf|gradle|txt|csv|proto|graphql|gql)$/i;
+// File-path reference detection (SOURCE_EXT, isFileRef, extractFileRefs) lives in the
+// shared ref-extract module so this gate and heal-docs agree on what a ref is.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,50 +65,30 @@ function exists(filePath: string): boolean {
   return fs.existsSync(filePath);
 }
 
+// Case-exact existence: on a case-insensitive FS (default macOS APFS), existsSync
+// returns true for `lib/Auth.ts` when the real file is `lib/auth.ts` — masking a ref
+// that is genuinely broken for Linux/CI collaborators. Verify the final segment's
+// exact case via the parent directory listing.
+function existsExactCase(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    return fs.readdirSync(path.dirname(filePath)).includes(path.basename(filePath));
+  } catch {
+    return false;
+  }
+}
+
 function readFile(filePath: string): string {
   return fs.readFileSync(filePath, "utf-8");
 }
 
-/**
- * Extract all backtick-wrapped file paths from a markdown string.
- * Matches path-shaped source refs: `path/to/file.ts`, `app/api/route.ts`.
- * Deliberately does NOT match bare filenames (`route.ts`), URL routes (`/flows`),
- * schema.table identifiers (`events.outbox`), placeholders (`<id>`), or hostnames
- * (`pages.acme.com`) — these are common non-file backtick tokens and flagging them
- * produces false positives that block the pre-push gate on healthy docs.
- * A token qualifies only if it contains "/" (and isn't a leading-slash route) and
- * ends in a known source/asset/config extension (SOURCE_EXT), optionally with a
- * :line[:col] suffix.
- */
-function extractFilePaths(markdown: string): string[] {
-  const matches = markdown.matchAll(/`([^`]+)`/g);
-  const paths: string[] = [];
-
-  for (const match of matches) {
-    const candidate = match[1];
-    if (candidate === undefined) continue;
-    const cleanish = candidate.replace(/:\d+([-:]\d+)?$/, ""); // strip :line, :line:col, :line-line
-    const firstSeg = cleanish.split("/")[0];
-
-    const looksLikePath =
-      cleanish.includes("/") && // path-shaped (excludes bare `route.ts`, `events.outbox`)
-      !cleanish.startsWith("/") && // excludes URL routes (/api/..., /flows)
-      SOURCE_EXT.test(cleanish) && // ends in a real source/asset/config extension
-      !SKIP_PATH_PATTERNS.some((p) => p.test(cleanish)) &&
-      !cleanish.includes(" ") && // no spaces in file paths
-      !cleanish.includes("(") && // not a function call
-      !cleanish.includes("<") && // excludes placeholder tokens like /p/<id>/<slug>
-      !/[*?{}]/.test(cleanish) && // excludes globs (`src/**/*.ts`) — existsSync always fails them
-      !cleanish.startsWith("path/to/") && // the canonical placeholder-path idiom
-      !firstSeg.includes(".") && // excludes hostname-shaped refs (raw.githubusercontent.com/...)
-      cleanish.length < 200;
-
-    if (looksLikePath) {
-      paths.push(candidate); // keep raw candidate; the existence check strips :line[:col]
-    }
-  }
-
-  return [...new Set(paths)]; // deduplicate
+// Boundary-aware "is this doc path referenced in the map" — not a raw substring, so
+// `patterns/foo.md` isn't considered indexed just because it's a substring of a
+// longer token. Requires the path to appear as a standalone token (table cell / link
+// / list item), bounded by a non-path character or a line edge.
+function listedInMap(mapContent: string, relPath: string): boolean {
+  const esc = relPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w./-])${esc}([^\\w./-]|$)`, "m").test(mapContent);
 }
 
 function getAllDocFiles(dir: string = DOCS_DIR): string[] {
@@ -175,11 +137,10 @@ function checkFilePathReferences(): PathCheckResult[] {
     // is an infra problem, not doc rot, and must not block the pre-push gate.
     let content: string;
     try { content = readFile(docFile); } catch { continue; }
-    const referencedPaths = extractFilePaths(content);
+    const referencedPaths = extractFileRefs(content);
 
     for (const refPath of referencedPaths) {
-      // Strip :line, :line:col, or :line-line suffix (`file.ts:42`, `file.ts:12-40`)
-      const cleanPath = refPath.replace(/:\d+([-:]\d+)?$/, "");
+      const cleanPath = stripLineSuffix(refPath); // `file.ts:42`, `file.ts:12-40`
 
       // Try resolving relative to project root
       const resolvedPath = path.isAbsolute(cleanPath)
@@ -190,7 +151,7 @@ function checkFilePathReferences(): PathCheckResult[] {
         doc: path.relative(projectRoot, docFile),
         referencedPath: refPath,
         resolvedPath,
-        exists: exists(resolvedPath)
+        exists: existsExactCase(resolvedPath)
       });
     }
   }
@@ -226,7 +187,7 @@ function checkIndexCoverage(): IndexCheckResult[] {
     results.push({
       docFile: path.relative(projectRoot, patternFile),
       docName,
-      listedInSystemMap: systemMapContent.includes(relPath),
+      listedInSystemMap: listedInMap(systemMapContent, relPath),
       section: "patterns"
     });
   }
@@ -240,7 +201,7 @@ function checkIndexCoverage(): IndexCheckResult[] {
     results.push({
       docFile: path.relative(projectRoot, decisionFile),
       docName,
-      listedInSystemMap: systemMapContent.includes(relPath),
+      listedInSystemMap: listedInMap(systemMapContent, relPath),
       section: "decisions"
     });
   }

@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Your AI doesn't remember. Jeeves does. Session memory and living documentation for Claude Code.",
-    "version": "4.6.4"
+    "version": "4.6.5"
   },
   "plugins": [
     {
       "name": "jeeves",
       "source": "./",
       "description": "Session memory and living docs — 15 modes for brainstorming, code documentation, quality hardening, and drift detection. Your AI doesn't remember. Jeeves does.",
-      "version": "4.6.4",
+      "version": "4.6.5",
       "author": {
         "name": "Jeeves"
       },

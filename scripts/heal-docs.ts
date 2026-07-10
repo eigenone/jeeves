@@ -31,6 +31,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { execSync, execFileSync } from "child_process";
+import { isFileRef, stripLineSuffix } from "./ref-extract";
 
 // ── Configuration (adapt for your project) ─────────────────────────
 const ROOT = process.cwd();
@@ -41,7 +42,8 @@ const FIX_MODE = process.argv.includes("--fix");
 const CODE_DIRS = ["lib", "app", "workers", "components", "prisma", "widget", "src", "packages", "e2e", "tests", "scripts", "drizzle", "config", "hooks", "contexts"];
 
 // Regex to extract backtick-wrapped file paths
-const PATH_REGEX = /`([a-zA-Z][a-zA-Z0-9_\-./]*\.[a-zA-Z]{1,4})`/g;
+// File-path ref detection now lives in ./ref-extract (isFileRef) — shared with the
+// pre-push gate. Only DIR_REGEX (directory refs) remains heal-specific.
 const DIR_REGEX = /`([a-zA-Z][a-zA-Z0-9_\-./]*\/)`/g;
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -282,20 +284,28 @@ function main() {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Extract file paths from backticks
-      for (const regex of [PATH_REGEX, DIR_REGEX]) {
-        regex.lastIndex = 0;
-        let match;
-        while ((match = regex.exec(line)) !== null) {
-          const refPath = match[1];
-
-          // Skip non-code paths, URLs, placeholders
-          if (!isCodePath(refPath)) continue;
+      // FILE refs via the SHARED predicate (identical to the pre-push gate, so heal
+      // can fix exactly what the gate flags — no more "gate says broken, heal says
+      // all valid" for prisma/.svelte/etc.). DIRECTORY refs are heal-only (no
+      // extension) so they still gate on CODE_DIRS via DIR_REGEX.
+      const lineRefs: string[] = [];
+      for (const bt of line.matchAll(/`([^`]+)`/g)) {
+        if (bt[1] !== undefined && isFileRef(bt[1])) lineRefs.push(bt[1]);
+      }
+      DIR_REGEX.lastIndex = 0;
+      let dmatch;
+      while ((dmatch = DIR_REGEX.exec(line)) !== null) {
+        if (isCodePath(dmatch[1])) lineRefs.push(dmatch[1]);
+      }
+      {
+        for (const refPath of lineRefs) {
+          // heal has never handled :line-suffixed refs; the gate reports them and the
+          // user fixes them by hand. Preserve that (don't rewrite and drop the line#).
+          if (refPath !== stripLineSuffix(refPath)) continue;
+          // Semantic placeholder skips (isFileRef already excludes globs/<>/spaces).
           if (refPath.includes("{{")) continue;
-          if (refPath.includes("*")) continue;
           if (refPath.includes("xxx") || refPath.includes("XXX")) continue;
-          if (refPath.includes("<") || refPath.includes(">")) continue;
-          if (/New[A-Z][a-z]+/.test(getBasename(refPath))) continue; // Skip placeholder names like NewType.tsx, NewFeature.ts
+          if (/New[A-Z][a-z]+/.test(getBasename(refPath))) continue; // NewType.tsx etc.
           if (/[Ee]xample|[Ss]ample|[Tt]emplate|[Pp]laceholder/.test(refPath)) continue;
 
           totalPaths++;

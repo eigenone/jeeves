@@ -20,18 +20,25 @@ STATE="/tmp/jeeves-${SAFE_ID}"
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
 
-# Resolve jeeves.ts: PREFER the plugin's copy over a project-local scripts/jeeves.ts.
-# A plugin update cannot refresh a copy committed into the user's repo, so a stale
-# local copy keeps running old logic on every prompt — and pre-4.6 versions are
-# pathologically slow (~35s for --capture-check), which blows this hook's timeout.
-# Mirror the v4.5.3 auto-heal precedent (prefer plugin over stale local). Fall back
-# to a project-local copy only when there is no plugin root (toolkit-only installs).
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
-  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+# Resolve the engine into the JEEVES array. Two orthogonal preferences:
+#  1. PREFER the plugin copy over a project-local one — a plugin update can't refresh
+#     a copy committed into the repo, and a stale local copy runs old (pre-4.6:
+#     ~35s) logic that blows this per-prompt hook's timeout (v4.5.3 precedent).
+#  2. PREFER the prebuilt jeeves.cjs (run with node) over jeeves.ts (run with tsx) —
+#     node skips the tsx transpile + npx cold-start entirely. Fall back to tsx when
+#     no .cjs exists (toolkit-only installs / missing build), so this never regresses.
+# Array form so a path containing spaces stays intact.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
+  JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts")
+elif [ -f "scripts/jeeves.cjs" ]; then
+  JEEVES=(node scripts/jeeves.cjs)
+elif [ -f "scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx scripts/jeeves.ts)
 else
-  JEEVES_SCRIPT="scripts/jeeves.ts"
+  emit_empty
 fi
-[ -f "$JEEVES_SCRIPT" ] || emit_empty
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
@@ -83,16 +90,16 @@ fi
 
 # --- detect thinking-candidate; bootstrap once ---
 if [ "$bootstrapped" != "1" ]; then
-  CAND=$(npx tsx "$JEEVES_SCRIPT" "$CWD" --thinking-candidate 2>/dev/null)
+  CAND=$("${JEEVES[@]}" "$CWD" --thinking-candidate 2>/dev/null)
   if [ "$CAND" = "yes" ]; then
-    npx tsx "$JEEVES_SCRIPT" "$CWD" --bootstrap-thinking >/dev/null 2>&1
+    "${JEEVES[@]}" "$CWD" --bootstrap-thinking >/dev/null 2>&1
   fi
   bootstrapped=1
 fi
 
 PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
 
-CC=$(npx tsx "$JEEVES_SCRIPT" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
+CC=$("${JEEVES[@]}" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
 # Sanitize to hex before it can be persisted + later sourced as shell (the value is
 # a git SHA; strip anything else so a malformed/hostile value can't inject).
 HEAD_NOW=$(printf '%s' "$CC" | jq -r '.head // empty' 2>/dev/null | tr -cd '0-9a-fA-F')

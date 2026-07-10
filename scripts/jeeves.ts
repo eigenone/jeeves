@@ -97,6 +97,18 @@ function runGit(args: string[], opts?: { timeout?: number }): string {
   return runFile("git", args, opts);
 }
 
+// Last-commit time (epoch seconds) for a repo-relative file, memoized. 0 = not
+// committed / unknown. Commit time is reliable across clones/checkouts; mtime is not
+// (a fresh clone bumps every mtime), which is why staleness/reconcile use this.
+const _commitTimeCache = new Map<string, number>();
+function gitCommitTime(relFile: string): number {
+  if (_commitTimeCache.has(relFile)) return _commitTimeCache.get(relFile)!;
+  const n = parseInt(runGit(["log", "-1", "--format=%ct", "--", relFile]), 10);
+  const v = isNaN(n) ? 0 : n;
+  _commitTimeCache.set(relFile, v);
+  return v;
+}
+
 // Prefer the plugin's copy of a helper script over a (possibly stale or absent)
 // project-local one — same rationale as the heal-docs resolution: a plugin update
 // can't refresh a copy committed into the user's repo, and a stale copy runs old
@@ -268,13 +280,13 @@ function getGitChanges(): GitChanges {
   let deletedCodeFiles: string[] = [];
 
   if (lastDocCommit) {
-    const changed = run(`git diff --name-only --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const changed = run(`git -c core.quotepath=off diff --name-only --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     changedCodeFiles = changed ? changed.split("\n") : [];
 
-    const added = run(`git diff --name-only --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const added = run(`git -c core.quotepath=off diff --name-only --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     newCodeFiles = added ? added.split("\n") : [];
 
-    const deleted = run(`git diff --name-only --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const deleted = run(`git -c core.quotepath=off diff --name-only --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     deletedCodeFiles = deleted ? deleted.split("\n") : [];
   }
 
@@ -1078,7 +1090,7 @@ function main() {
 
   if (MODE === "research") {
     const topic = process.argv.slice(process.argv.indexOf("--research") + 1).filter(a => !a.startsWith("-")).join(" ") || "untitled";
-    const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
     const researchDir = path.join(THINKING_DIR, "research");
     if (!fs.existsSync(researchDir)) fs.mkdirSync(researchDir, { recursive: true });
     const filePath = path.join(researchDir, `${slug}.md`);
@@ -1121,7 +1133,7 @@ function main() {
 
   if (MODE === "save") {
     const name = process.argv.slice(process.argv.indexOf("--save") + 1).filter(a => !a.startsWith("-")).join(" ") || "untitled";
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
     const artifactsDir = path.join(THINKING_DIR, "artifacts");
     if (!fs.existsSync(artifactsDir)) fs.mkdirSync(artifactsDir, { recursive: true });
     const filePath = path.join(artifactsDir, `${slug}.md`);
@@ -1376,28 +1388,10 @@ function main() {
           });
         }
 
-        // Check if there's a newer decision on the same topic
-        const baseName = f.replace(".md", "");
-        const otherDir = dir.includes("thinking") ? path.join(DOCS_DIR, "decisions") : path.join(THINKING_DIR, "decisions");
-        if (exists(otherDir)) {
-          for (const otherF of fs.readdirSync(otherDir).filter(of => of.endsWith(".md"))) {
-            const otherBase = otherF.replace(".md", "");
-            // Check for overlap in topic (rough match — shares 2+ words)
-            const words = new Set(baseName.split("-"));
-            const otherWords = otherBase.split("-");
-            const overlap = otherWords.filter(w => words.has(w)).length;
-            if (overlap >= 2 && baseName !== otherBase) {
-              const otherMtime = fs.statSync(path.join(otherDir, otherF)).mtimeMs;
-              const thisMtime = fs.statSync(path.join(dir, f)).mtimeMs;
-              if (otherMtime > thisMtime) {
-                driftItems.push({
-                  file: relPath, type: "decision", severity: "superseded",
-                  issue: `May be superseded by newer: ${path.relative(ROOT, path.join(otherDir, otherF))}`,
-                });
-              }
-            }
-          }
-        }
+        // NOTE: the old "May be superseded by newer" check compared two decision docs
+        // by fs.mtime — meaningless after a clone/checkout (arbitrary ordering), which
+        // is exactly the false-positive class the staleness engine dropped mtime for.
+        // Removed: content-aware staleness (--stale) owns real "is this doc stale".
       }
     }
 
@@ -1407,7 +1401,9 @@ function main() {
       for (const f of fs.readdirSync(topicsDir).filter(f => f.endsWith(".md"))) {
         const content = read(path.join(topicsDir, f));
         const relPath = `thinking/topics/${f}`;
-        const mtime = fs.statSync(path.join(topicsDir, f)).mtimeMs;
+        // Commit time, not mtime — reliable across clones. 0 = uncommitted (skip: we
+        // can't reason about age for a file that was never committed).
+        const topicTime = gitCommitTime(relPath);
 
         // Check if there are newer decisions that relate to this topic
         const topicWords = new Set(f.replace(".md", "").split("-"));
@@ -1417,8 +1413,8 @@ function main() {
             const decWords = df.replace(".md", "").split("-");
             const overlap = decWords.filter(w => topicWords.has(w)).length;
             if (overlap >= 2) {
-              const decMtime = fs.statSync(path.join(decDir, df)).mtimeMs;
-              if (decMtime > mtime) {
+              const decTime = gitCommitTime(path.relative(ROOT, path.join(decDir, df)));
+              if (topicTime > 0 && decTime > topicTime) {
                 driftItems.push({
                   file: relPath, type: "topic", severity: "outdated",
                   issue: `Topic not updated since decision was made: ${df.replace(".md", "")}`,
@@ -1789,7 +1785,7 @@ function main() {
 
     // Find code directories that might represent features
     const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
-    const allCode = run(`git ls-files 2>/dev/null | ${codeFilter}`);
+    const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
     const codeDirs = new Map<string, number>();
     for (const f of codeFiles) {
@@ -1858,7 +1854,7 @@ function main() {
 
   if (MODE === "archive") {
     const label = process.argv.slice(process.argv.indexOf("--archive") + 1).filter(a => !a.startsWith("-")).join(" ") || today();
-    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
     const archiveDir = path.join(THINKING_DIR, "archive", slug);
 
     console.log(`\n🤵 Jeeves — Archive & Fresh Start\n`);
@@ -1930,7 +1926,7 @@ function main() {
     const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
 
     // Find code files with few or no comments
-    const allCode = run(`git ls-files 2>/dev/null | ${codeFilter}`);
+    const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
 
     interface AnnotateTarget {
@@ -1997,7 +1993,7 @@ function main() {
     console.log("\n🤵 Jeeves — Verify Comments\n");
     const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
 
-    const allCode = run(`git ls-files 2>/dev/null | ${codeFilter}`);
+    const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
 
     interface CommentBlock {
@@ -2168,7 +2164,12 @@ function main() {
 
     const sessionHasSubstance = prompts >= SUBSTANCE_THRESHOLD;
     const deferForGit = state.mode === "both" && recentGitCommit;
-    const shouldBlock = isThinking && sessionHasSubstance && !captured && !deferForGit;
+    // Don't hard-block before the user has seen at least one nudge. Nudges fire at the
+    // first prompt that is a multiple of NUDGE_INTERVAL and >= SUBSTANCE_THRESHOLD
+    // (i.e. prompt 10 with the defaults); blocking at 6-9 would ambush a session that
+    // was never warned. Gate the block on that same first-nudge point.
+    const firstNudgeAt = Math.ceil(SUBSTANCE_THRESHOLD / NUDGE_INTERVAL) * NUDGE_INTERVAL;
+    const shouldBlock = isThinking && prompts >= firstNudgeAt && !captured && !deferForGit;
     const shouldNudge = isThinking && prompts > 0 && prompts % NUDGE_INTERVAL === 0 && !captured && !deferForGit && sessionHasSubstance;
 
     const payload = {
@@ -2389,7 +2390,14 @@ function main() {
 
   if (MODE === "handoff") {
     const handoff = generateHandoff(state, git, actions);
-    const sessionFile = path.join(THINKING_DIR, "sessions", `${today()}-handoff.md`);
+    // Code-only repos: write the handoff under docs/internal/, NOT thinking/. Creating
+    // thinking/ would flip detectState() to "both" and silently start capture nudges +
+    // the Stop gate on a project that never opted into thinking-mode. Only write to
+    // thinking/ when the repo is already in a thinking mode.
+    const isThinking = state.mode === "brainstorm" || state.mode === "both";
+    const sessionFile = isThinking
+      ? path.join(THINKING_DIR, "sessions", `${today()}-handoff.md`)
+      : path.join(DOCS_DIR, "sessions", `${today()}-handoff.md`);
 
     // Ensure directory exists
     const sessionDir = path.dirname(sessionFile);

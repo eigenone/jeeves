@@ -170,6 +170,10 @@ function handle(msg) {
 
   if (method === "notifications/initialized") return;
 
+  // MCP ping: must return an empty result, not a method-not-found error (some clients
+  // treat the error as a fatal transport failure and drop the connection).
+  if (method === "ping") return reply(id, {});
+
   if (method === "tools/list") {
     return reply(id, { tools: TOOLS });
   }

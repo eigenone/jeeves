@@ -1,25 +1,35 @@
 #!/bin/bash
 INPUT=$(cat)
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
-# Not a git commit — return empty JSON and exit
-if ! echo "$COMMAND" | grep -q "git commit"; then
-  echo '{}'
-  exit 0
-fi
+# Only real `git commit`. Skip dry-runs and incidental mentions (`echo "git commit"`).
+case "$COMMAND" in
+  *--dry-run*) echo '{}'; exit 0 ;;
+esac
+printf '%s' "$COMMAND" | grep -Eq '(^|[;&|[:space:]])git([[:space:]]+-[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)' || { echo '{}'; exit 0; }
+
+# Run from the session's project root if the hook provided one (parity with
+# session-check) — otherwise a subdir session would analyze the wrong root.
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$CWD" ] && cd "$CWD" 2>/dev/null
+[ -n "$CWD" ] || CWD="$(pwd)"
 
 USAGE_LOG="${JEEVES_USAGE_LOG:-${HOME}/.jeeves-usage.log}"
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) post_commit project=$(basename "$(pwd)")" >> "$USAGE_LOG" 2>/dev/null
 
-# Run Jeeves to analyze what needs documenting.
-# Prefer the plugin's jeeves.ts over a stale project-local copy (see session-check.sh
-# for rationale; a stale local copy can be ~35s and blow this hook's timeout).
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
-  JEEVES_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts"
+# Run Jeeves to analyze what needs documenting. Resolve the engine (see
+# session-check.sh): prefer plugin over stale local, and jeeves.cjs (node) over
+# jeeves.ts (tsx); fall back to tsx when no .cjs exists.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
+  JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
+  JEEVES=(npx tsx "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts")
+elif [ -f "scripts/jeeves.cjs" ]; then
+  JEEVES=(node scripts/jeeves.cjs)
 else
-  JEEVES_SCRIPT="scripts/jeeves.ts"
+  JEEVES=(npx tsx scripts/jeeves.ts)
 fi
-OUTPUT=$(npx tsx "$JEEVES_SCRIPT" 2>/dev/null)
+OUTPUT=$("${JEEVES[@]}" "$CWD" 2>/dev/null)
 
 # Only surface medium+ priority (red/yellow). Count low-priority separately.
 HIGH=$(echo "$OUTPUT" | grep -E "🔴|🟡" | grep "ACTION" | head -5 | sed 's/^.*ACTION/ACTION/' | tr '\n' ' ')
