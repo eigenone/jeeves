@@ -36,11 +36,19 @@ fi
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
 last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0
-# Sourcing the state file evaluates it as shell. Accepted: STATE path is keyed
-# on a sanitized session id under /tmp (sticky bit; same-UID only), and every
-# persisted value originates from controlled code (git SHA, ints, mtime float),
-# never user input. Not safe for multi-tenant; fine for single-user dev.
+# Sourcing the state file evaluates it as shell. Defense in depth: (1) values are
+# sanitized to safe character classes BEFORE they are ever written (see below), so
+# nothing shell-active can enter the file; (2) after loading we coerce every counter
+# back to a clean integer, so a corrupted/hand-edited file can't break arithmetic or
+# bypass the block ceiling. STATE is keyed on a sanitized session id under /tmp
+# (sticky bit, same-UID). Not for multi-tenant; fine for single-user dev.
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
+for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged; do
+  eval "_cur=\${$_v}"
+  case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
+done
+head_at_last_check=$(printf '%s' "${head_at_last_check:-}" | tr -cd '0-9a-fA-F')
+case "${since:-}" in *[!0-9.]*|'') since="" ;; esac
 prompts=$((prompts + 1))
 
 # --- usage telemetry: one session_start per session ---
@@ -85,7 +93,9 @@ fi
 PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
 
 CC=$(npx tsx "$JEEVES_SCRIPT" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
-HEAD_NOW=$(printf '%s' "$CC" | jq -r '.head // empty' 2>/dev/null)
+# Sanitize to hex before it can be persisted + later sourced as shell (the value is
+# a git SHA; strip anything else so a malformed/hostile value can't inject).
+HEAD_NOW=$(printf '%s' "$CC" | jq -r '.head // empty' 2>/dev/null | tr -cd '0-9a-fA-F')
 [ -n "$HEAD_NOW" ] && head_at_last_check="$HEAD_NOW"
 # Commit observed since last check -> stamp this prompt index. capture-check
 # turns last_commit_prompt into the GIT_DEFER_WINDOW deferral (both-mode).
@@ -94,7 +104,8 @@ HEAD_CHANGED=$(printf '%s' "$CC" | jq -r '.headChanged // false' 2>/dev/null)
 # First call of the session: record the pre-session thinking/ mtime as the
 # per-session baseline so prior-session captures don't silence the gate forever.
 if [ -z "$since" ]; then
-  since=$(printf '%s' "$CC" | jq -r '.newest // 0' 2>/dev/null)
+  # mtime float; keep only digits/dot before it can be persisted + sourced.
+  since=$(printf '%s' "$CC" | jq -r '.newest // 0' 2>/dev/null | tr -cd '0-9.')
   [ -z "$since" ] && since=0
 fi
 MODE=$(printf '%s' "$CC" | jq -r '.mode // "none"' 2>/dev/null)

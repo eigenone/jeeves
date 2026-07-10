@@ -2,11 +2,15 @@
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
-# Not a git push — allow silently
-if ! echo "$COMMAND" | grep -q "git push"; then
-  echo '{}'
-  exit 0
-fi
+# Only gate real `git push`. Skip dry-runs and incidental mentions (`echo "git push"`).
+case "$COMMAND" in
+  *--dry-run*) echo '{}'; exit 0 ;;
+esac
+printf '%s' "$COMMAND" | grep -Eq '(^|[;&|[:space:]])git([[:space:]]+-[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' || { echo '{}'; exit 0; }
+
+# Run from the session's project root if the hook provided one (parity with session-check).
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$CWD" ] && cd "$CWD" 2>/dev/null
 
 # Prefer a PROJECT-LOCAL lint-docs.ts over the plugin's. This is DELIBERATELY the
 # opposite of the jeeves.ts resolution in the other hooks. jeeves.ts is the engine
@@ -23,12 +27,22 @@ if [ -f "scripts/lint-docs.ts" ]; then
 else
   LINT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts"
 fi
-if [ -f "$LINT_SCRIPT" ]; then
-  npx tsx "$LINT_SCRIPT" > /dev/null 2>&1
-  if [ $? -ne 0 ]; then
-    echo "Doc lint failed. Run: npx tsx scripts/lint-docs.ts" >&2
-    exit 2
-  fi
+[ -f "$LINT_SCRIPT" ] || { echo '{}'; exit 0; }
+
+# Resolve tsx to a direct binary. FAIL OPEN if the toolchain can't run — a missing or
+# broken runner (offline npx, tsx absent, node error) must NEVER block a push; only
+# genuine lint findings do. lint-docs exits 1 for findings and fails open (exit 0) on
+# its own internal errors, so a non-zero exit here unambiguously means broken paths.
+if command -v tsx >/dev/null 2>&1; then TSX="tsx"
+elif [ -x "node_modules/.bin/tsx" ]; then TSX="node_modules/.bin/tsx"
+else TSX="npx --no-install tsx"; fi
+if ! $TSX --version >/dev/null 2>&1; then echo '{}'; exit 0; fi
+
+OUT=$($TSX "$LINT_SCRIPT" 2>&1); CODE=$?
+if [ "$CODE" -ne 0 ]; then
+  FINDINGS=$(printf '%s\n' "$OUT" | grep -iE 'not found|FAILURE|✗' | head -20)
+  printf 'Doc lint failed (%s) — fix these broken paths before pushing:\n%s\n' "$LINT_SCRIPT" "$FINDINGS" >&2
+  exit 2
 fi
 
 echo '{}'

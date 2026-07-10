@@ -13,8 +13,7 @@
  * This script handles the MECHANICAL checks.
  *
  * Usage:
- *   npx tsx scripts/content-lint.ts           # Run all checks
- *   npx tsx scripts/content-lint.ts --fix     # Auto-fix what's possible
+ *   npx tsx scripts/content-lint.ts           # Run all checks (report-only)
  */
 
 import * as fs from "fs";
@@ -22,7 +21,6 @@ import * as path from "path";
 
 const ROOT = process.cwd();
 const DOCS_DIR = path.join(ROOT, "docs", "internal");
-const FIX_MODE = process.argv.includes("--fix");
 
 interface LintResult {
   level: "error" | "warning" | "info";
@@ -54,19 +52,32 @@ function getAllMdFiles(dir: string): string[] {
 }
 
 function parseFrontmatter(content: string): Record<string, unknown> | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  const norm = content.replace(/\r\n/g, "\n"); // CRLF-tolerant (else false "missing frontmatter")
+  const match = norm.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
 
   const fm: Record<string, unknown> = {};
-  for (const line of match[1].split("\n")) {
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*-\s/.test(line)) continue; // block-list item, consumed by its key below
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
     const key = line.slice(0, colonIdx).trim();
     let value: unknown = line.slice(colonIdx + 1).trim();
 
-    // Parse arrays: [a, b, c]
     if (typeof value === "string" && value.startsWith("[") && value.endsWith("]")) {
-      value = value.slice(1, -1).split(",").map(s => s.trim());
+      // Inline array: [a, b, c]
+      value = value.slice(1, -1).split(",").map(s => s.trim()).filter(Boolean);
+    } else if (value === "") {
+      // Block-style list:  key:\n  - a\n  - b  (was parsed as empty -> false "missing field")
+      const items: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && /^\s*-\s/.test(lines[j])) {
+        items.push(lines[j].replace(/^\s*-\s*/, "").trim());
+        j++;
+      }
+      if (items.length) { value = items; i = j - 1; }
     }
 
     fm[key] = value;

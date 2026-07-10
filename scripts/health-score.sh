@@ -154,7 +154,9 @@ echo "── 3. Completeness (/25) ──"
 
 # Check system map has all 7 sections
 if [ -f "$DOCS_DIR/SYSTEM-MAP.md" ]; then
-  SECTIONS=$(grep -c "^## " "$DOCS_DIR/SYSTEM-MAP.md" 2>/dev/null || echo "0")
+  # grep -c already prints a count (0 on no match); the old `|| echo 0` appended a
+  # SECOND 0 (grep exits 1 on no match) -> "0\n0" -> integer-expression error.
+  SECTIONS=$(grep -c "^## " "$DOCS_DIR/SYSTEM-MAP.md" 2>/dev/null); SECTIONS=${SECTIONS:-0}
   if [ "$SECTIONS" -ge 7 ]; then
     echo "  ✓ System map has all 7 sections"
     COMP_SCORE=$((COMP_SCORE + 5))
@@ -300,7 +302,7 @@ if [ -f "$ROOT/scripts/lint-docs.ts" ]; then
     echo "  ✓ Lint passes cleanly"
     LINT_SCORE=$((LINT_SCORE + 10))
   else
-    LINT_ERRORS=$(echo "$LINT_OUTPUT" | grep -c "✗\|FAIL\|ERROR" 2>/dev/null || echo "?")
+    LINT_ERRORS=$(echo "$LINT_OUTPUT" | grep -c "✗\|FAIL\|ERROR" 2>/dev/null); LINT_ERRORS=${LINT_ERRORS:-0}
     echo "  ✗ Lint has errors ($LINT_ERRORS issues)"
     LINT_SCORE=$((LINT_SCORE + 2))
   fi

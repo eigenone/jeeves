@@ -1,12 +1,19 @@
 #!/bin/bash
 INPUT=$(cat)
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
-# Not a git push — skip
-if ! echo "$COMMAND" | grep -q "git push"; then
-  echo '{}'
-  exit 0
-fi
+# Only real `git push`. Skip non-push, dry-runs, and incidental mentions
+# (`echo "git push"`) — a loose match marked actions "seen" on non-pushes,
+# suppressing them on the next real push.
+case "$COMMAND" in
+  *--dry-run*) echo '{}'; exit 0 ;;
+esac
+printf '%s' "$COMMAND" | grep -Eq '(^|[;&|[:space:]])git([[:space:]]+-[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' || { echo '{}'; exit 0; }
+
+# Skip if the push itself failed — otherwise we'd persist the current action set as
+# "seen" and never surface it after the user fixes the push and retries.
+TOOL_OK=$(printf '%s' "$INPUT" | jq -r '(.tool_response.success // .tool_response.exit_code // empty)' 2>/dev/null)
+case "$TOOL_OK" in false|[1-9]*) echo '{}'; exit 0 ;; esac
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) post_push project=$(basename "$(pwd)")" >> "${HOME}/.jeeves-usage.log" 2>/dev/null
 
@@ -60,7 +67,7 @@ ACTIONS_UNINDEXED=$(printf '%s\n' "$NEW_SIGS" | grep '^unindexed|' \
   | awk -F'|' '{print "ACTION [unindexed] medium: Add to SYSTEM-MAP → " $2}' 2>/dev/null || true)
 
 ACTIONS=$(printf '%s\n%s\n' "$ACTIONS_FROM_JSON" "$ACTIONS_UNINDEXED" \
-  | grep -v '^$' | head -10 | tr '\n' ' ' | sed 's/"/\\"/g')
+  | grep -v '^$' | head -10 | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
 NEW_COUNT=$(printf '%s\n' "$NEW_SIGS" | grep -vc '^$' || echo 0)
 
 [ -z "$ACTIONS" ] && { echo '{}'; exit 0; }

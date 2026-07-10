@@ -119,14 +119,21 @@ function searchKb(projectRoot, query, scope, limit) {
     return { matches: [], note: `No ${scope} docs found under ${docsRoot}` };
   }
 
-  const result = spawnSync("grep", ["-rniI", "--include=*.md", query, ...existing], {
+  // -F: treat the query as a LITERAL string, not a regex (the tool contract says
+  // "search term or phrase"). -e query: so a query starting with `-` isn't parsed as
+  // an option. --: end of options before the file list.
+  const result = spawnSync("grep", ["-rniIF", "--include=*.md", "-e", query, "--", ...existing], {
     cwd: projectRoot,
     encoding: "utf-8",
     timeout: 15000,
   });
+  // spawnSync failed to launch the process at all (e.g. grep missing).
+  if (result.error) {
+    return { error: `grep failed to run: ${result.error.message}` };
+  }
   // grep exits 1 when no matches — that's fine.
   if (result.status !== 0 && result.status !== 1) {
-    return { error: `grep exited ${result.status}: ${result.stderr}` };
+    return { error: `grep exited ${result.status}: ${result.stderr || ""}` };
   }
 
   const lines = (result.stdout || "").split("\n").filter(Boolean);

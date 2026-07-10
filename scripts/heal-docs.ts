@@ -30,7 +30,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 
 // ── Configuration (adapt for your project) ─────────────────────────
 const ROOT = process.cwd();
@@ -91,24 +91,37 @@ function getBasename(p: string): string {
 function findRenamedFile(oldPath: string): string | null {
   try {
     const basename = getBasename(oldPath);
-    // Do NOT pass a restrictive pathspec (`-- "*old.ts"`) — it filters out the
-    // rename's destination side, so git can't pair old->new and emits nothing.
+    const oldDir = path.posix.dirname(oldPath);
     // Scan renames via --name-status (R<score>\told\tnew); filter in JS.
-    const output = execSync(
-      `git log --all -M --diff-filter=R --name-status --format="" 2>/dev/null | head -2000`,
+    // NOT `--all`: a rename on an abandoned/other branch must not heal a doc — we
+    // only trust renames reachable from HEAD. No pathspec (it filters the dest
+    // side). execFileSync (array args) — no shell, no injection.
+    const output = execFileSync(
+      "git",
+      ["log", "-M", "--diff-filter=R", "--name-status", "--format="],
       { cwd: ROOT, encoding: "utf-8", timeout: 5000 }
     ).trim();
     if (!output) return null;
     // git log is reverse-chronological, so the first match is the most recent.
-    for (const line of output.split("\n")) {
+    // Exact-path match is the ONLY unambiguous signal. A same-basename rename in a
+    // DIFFERENT directory (auth/session.ts vs payments/session.ts) must never win —
+    // that produced confidently-wrong auto-edits. Accept a basename match only when
+    // the source was in the SAME directory (file renamed in place); otherwise skip.
+    let sameDirFallback: string | null = null;
+    for (const line of output.split("\n").slice(0, 5000)) {
       const parts = line.split("\t");
       if (parts.length < 3 || !parts[0].startsWith("R")) continue;
       const oldRenamed = parts[1].trim();
       const newRenamed = parts[2].trim();
-      if (oldRenamed === oldPath || getBasename(oldRenamed) === basename) {
-        if (fs.existsSync(path.join(ROOT, newRenamed))) return newRenamed;
+      if (!fs.existsSync(path.join(ROOT, newRenamed))) continue;
+      if (oldRenamed === oldPath) return newRenamed; // exact — first (most recent) wins
+      if (sameDirFallback === null &&
+          getBasename(oldRenamed) === basename &&
+          path.posix.dirname(oldRenamed) === oldDir) {
+        sameDirFallback = newRenamed;
       }
     }
+    return sameDirFallback;
   } catch {
     // git command failed — not a git repo or no history
   }
@@ -124,8 +137,10 @@ function findByBasename(oldPath: string): string[] {
   const results: string[] = [];
 
   try {
-    const output = execSync(
-      `find . -name "${basename}" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.next/*" -not -path "*/dist/*" 2>/dev/null`,
+    // execFileSync (array args) — no shell, so an odd basename can't inject.
+    const output = execFileSync(
+      "find",
+      [".", "-name", basename, "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/.next/*", "-not", "-path", "*/dist/*"],
       { cwd: ROOT, encoding: "utf-8", timeout: 5000 }
     ).trim();
 
@@ -152,8 +167,9 @@ function findSimilarFiles(oldPath: string): string[] {
   const results: string[] = [];
 
   try {
-    const output = execSync(
-      `find . -name "*${nameWithoutExt}*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.next/*" -not -path "*/dist/*" 2>/dev/null`,
+    const output = execFileSync(
+      "find",
+      [".", "-name", `*${nameWithoutExt}*`, "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/.next/*", "-not", "-path", "*/dist/*"],
       { cwd: ROOT, encoding: "utf-8", timeout: 5000 }
     ).trim();
 
@@ -182,8 +198,19 @@ const HISTORICAL_MARKER =
 const PACKAGE_PREFIXES = new Set(["apps", "packages", "services", "libs", "modules"]);
 
 function packageRoot(p: string): string {
-  const segs = p.split("/");
+  // Operate on the DIRECTORY, never the filename — otherwise a same-directory rename
+  // (scripts/old.ts -> scripts/new.ts) looks cross-package and the guard blocks a
+  // legitimate auto-fix.
+  const slash = p.lastIndexOf("/");
+  const dir = slash >= 0 ? p.slice(0, slash) : "";
+  const segs = dir.split("/").filter(Boolean);
+  if (segs.length === 0) return ""; // root-level file
   if (PACKAGE_PREFIXES.has(segs[0]) && segs.length >= 2) return segs[0] + "/" + segs[1];
+  // Single-root layouts (everything under src/, lib/, app/): compare the first two
+  // DIRECTORY segments so src/auth vs src/payments count as different "packages".
+  // With a one-segment root the guard was a no-op in the common single-src repo,
+  // letting a same-basename cross-directory match auto-apply (confidently wrong).
+  if (segs.length >= 2) return segs[0] + "/" + segs[1];
   return segs[0];
 }
 
@@ -207,8 +234,8 @@ function isHistoricalDoc(relDocPath: string): boolean {
 
 function docIsArchived(fullDocPath: string): boolean {
   let c: string;
-  try { c = fs.readFileSync(fullDocPath, "utf-8"); } catch { return false; }
-  if (!c.startsWith("---\n")) return false;
+  try { c = fs.readFileSync(fullDocPath, "utf-8").replace(/\r\n/g, "\n"); } catch { return false; }
+  if (!c.startsWith("---\n")) return false; // CRLF normalized above so `status: archived` opt-out isn't silently bypassed
   const end = c.slice(4).indexOf("\n---\n");
   if (end === -1) return false;
   for (const line of c.slice(4, 4 + end).split("\n")) {
@@ -229,7 +256,8 @@ interface BrokenRef {
   suggestion: string | null;  // suggested fix
   confidence: "high" | "medium" | "low";
   source: "renamed" | "moved" | "similar" | "none";
-  lineText: string;      // raw line, for marker + ignore checks and diff output
+  lineText: string;      // raw line, for ignore checks and diff output
+  context: string;       // enclosing block (back to prev blank line), for marker check
   docArchived: boolean;  // frontmatter status:archived / superseded-by
 }
 
@@ -325,6 +353,13 @@ function main() {
             }
           }
 
+          // Enclosing block: walk up to the previous blank line (capped), so a
+          // "Deleted in v2:" header a few lines above a bulleted path list still
+          // guards those paths from being auto-rewritten (meaning-inverting edit).
+          let blockStart = i;
+          while (blockStart > 0 && lines[blockStart - 1].trim() !== "" && i - blockStart < 12) blockStart--;
+          const context = lines.slice(blockStart, i + 1).join("\n");
+
           broken.push({
             docPath: relDoc,
             lineNumber: i + 1,
@@ -333,6 +368,7 @@ function main() {
             confidence,
             source,
             lineText: line,
+            context,
             docArchived: archived,
           });
         }
@@ -351,12 +387,13 @@ function main() {
     if (!trustworthy) return false;
     // 2. Never cross a package/app boundary.
     if (crossesPackage(b.brokenPath, b.suggestion)) return false;
-    // 3. Never rewrite a path described as historical/retired.
-    //    Strip the broken path from the line before checking so that tokens
-    //    in the filename itself (e.g. "old" in "scripts/old.ts") don't trigger
-    //    the marker — only prose words matter.
-    const lineWithoutPath = b.lineText.replace(`\`${b.brokenPath}\``, "");
-    if (hasHistoricalMarker(lineWithoutPath)) return false;
+    // 3. Never rewrite a path described as historical/retired. Check the ENCLOSING
+    //    BLOCK, not just the ref's own line: the "Deleted in v2:\n- `x.ts`" idiom
+    //    puts the marker on the header line, not the path line. Strip the backtick
+    //    path token(s) first so filename tokens (e.g. "old" in "scripts/old.ts")
+    //    don't self-trigger — only prose words matter.
+    const contextWithoutPath = b.context.split(`\`${b.brokenPath}\``).join("");
+    if (hasHistoricalMarker(contextWithoutPath)) return false;
     // 4. Never auto-edit append-only logs or dated plan/spec/decision/session docs.
     if (isHistoricalDoc(b.docPath)) return false;
     // 5. Honor explicit opt-out (line marker or archived/superseded frontmatter).

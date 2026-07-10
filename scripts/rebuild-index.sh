@@ -12,7 +12,9 @@
 # This does NOT replace the entire system map. It only touches Sections 5 and 6
 # (Pattern Index and Decision Index). The rest of the system map is untouched.
 
-ROOT="${1:-.}"
+# First POSITIONAL arg is the project root; a leading flag (e.g. `--fix`) is not a
+# root (the documented `rebuild-index.sh --fix` otherwise set ROOT=--fix and errored).
+case "${1:-}" in ''|-*) ROOT="." ;; *) ROOT="$1" ;; esac
 DOCS_DIR="$ROOT/docs/internal"
 SYSTEM_MAP="$DOCS_DIR/SYSTEM-MAP.md"
 FIX_MODE=false
@@ -70,20 +72,22 @@ echo ""
 echo "── Orphan References (in index but file missing) ──"
 ORPHANS=0
 
-# Extract pattern references from system map
-grep -oE "patterns/[a-zA-Z0-9_-]+\.md" "$SYSTEM_MAP" 2>/dev/null | sort -u | while read -r ref; do
+# Extract pattern + decision references from the system map. Use process
+# substitution, NOT `grep | while`: a piped while runs in a SUBSHELL, so the
+# ORPHANS increment was lost and the script always reported "No orphan references".
+while read -r ref; do
   if [ ! -f "$DOCS_DIR/$ref" ]; then
     echo "  ✗ $ref — referenced in SYSTEM-MAP.md but file doesn't exist"
     ORPHANS=$((ORPHANS + 1))
   fi
-done
+done < <(grep -oE "patterns/[a-zA-Z0-9_-]+\.md" "$SYSTEM_MAP" 2>/dev/null | sort -u)
 
-grep -oE "decisions/[a-zA-Z0-9_-]+\.md" "$SYSTEM_MAP" 2>/dev/null | sort -u | while read -r ref; do
+while read -r ref; do
   if [ ! -f "$DOCS_DIR/$ref" ]; then
     echo "  ✗ $ref — referenced in SYSTEM-MAP.md but file doesn't exist"
     ORPHANS=$((ORPHANS + 1))
   fi
-done
+done < <(grep -oE "decisions/[a-zA-Z0-9_-]+\.md" "$SYSTEM_MAP" 2>/dev/null | sort -u)
 
 if [ $ORPHANS -eq 0 ] 2>/dev/null; then
   echo "  ✓ No orphan references"

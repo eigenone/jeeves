@@ -25,9 +25,22 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 
-const ROOT = process.argv.find(a => !a.startsWith("-") && a !== process.argv[0] && a !== process.argv[1]) || process.cwd();
+// Project root resolution. MUST be explicit — either `--root <dir>` or an
+// ABSOLUTE positional (which every hook passes as the first arg). A relative /
+// bare positional is NOT treated as root: mode args carry free text (e.g.
+// `--research pricing strategy`), and the old "first non-flag token" heuristic
+// mis-read "pricing" as ROOT, writing files into a junk dir and making every git
+// call ENOENT. Falls back to process.cwd() (correct for skills, which run with
+// cwd = the project dir).
+const ROOT = (() => {
+  const ri = process.argv.indexOf("--root");
+  if (ri >= 0 && process.argv[ri + 1]) return process.argv[ri + 1];
+  const absPositional = process.argv.slice(2).find(a => !a.startsWith("-") && path.isAbsolute(a));
+  if (absPositional) return absPositional;
+  return process.cwd();
+})();
 const MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
@@ -63,6 +76,40 @@ function run(cmd: string, opts?: { timeout?: number }): string {
   } catch {
     return "";
   }
+}
+
+// Shell-free command execution (array args) — use for any invocation that
+// interpolates filesystem names, doc frontmatter, or the project path, so a value
+// like `foo$(cmd).md` or a repo path containing `$`/backticks can't inject.
+function runFile(cmd: string, args: string[], opts?: { timeout?: number }): string {
+  try {
+    return execFileSync(cmd, args, {
+      cwd: ROOT,
+      encoding: "utf-8",
+      timeout: opts?.timeout || 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+function runGit(args: string[], opts?: { timeout?: number }): string {
+  return runFile("git", args, opts);
+}
+
+// Prefer the plugin's copy of a helper script over a (possibly stale or absent)
+// project-local one — same rationale as the heal-docs resolution: a plugin update
+// can't refresh a copy committed into the user's repo, and a stale copy runs old
+// logic. Engine/reporting scripts (jeeves.ts, heal-docs.ts, health-score.sh) prefer
+// the plugin; lint-docs is the ONE customization point and is resolved local-first
+// by the pre-push gate instead. Returns null if neither exists.
+function resolveScript(name: string): string | null {
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const pluginPath = pluginRoot ? path.join(pluginRoot, "scripts", name) : "";
+  if (pluginPath && exists(pluginPath)) return pluginPath;
+  const local = path.join(ROOT, "scripts", name);
+  if (exists(local)) return local;
+  return null;
 }
 
 function getAllMdFiles(dir: string): string[] {
@@ -210,7 +257,11 @@ function getGitChanges(): GitChanges {
   const lastDocCommit = run("git log --format='%H' -1 -- docs/internal/");
   const lastDocDate = run("git log --format='%ai' -1 -- docs/internal/");
 
-  const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
+  // NOTE: `package` must be anchored to the lockfile/manifest, NOT bare — a bare
+  // `package` alternative also excluded the entire `packages/` tree, making Jeeves
+  // blind to every pnpm/turbo monorepo. `\.claude/` covers our own dotdir; keep the
+  // dotfile exclusion narrow so real code like `.github/workflows/*.ts` isn't dropped.
+  const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|README|LICENSE|CHANGELOG|package\\.json|package-lock\\.json|pnpm-lock|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
 
   let changedCodeFiles: string[] = [];
   let newCodeFiles: string[] = [];
@@ -500,7 +551,12 @@ function findUnindexedDocs(): string[] {
   for (const dir of [PATTERNS_DIR, DECISIONS_DIR]) {
     if (!exists(dir)) continue;
     for (const file of fs.readdirSync(dir).filter(f => f.endsWith(".md"))) {
-      if (!systemMapContent.includes(file)) {
+      // Boundary-aware, not substring: a plain `content.includes("cache.md")` treats
+      // `cache.md` as indexed when SYSTEM-MAP only mentions `page-cache.md`. Require
+      // the filename to be bounded by a non-filename character (or line edge).
+      const esc = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const indexed = new RegExp(`(^|[^\\w.-])${esc}([^\\w.-]|$)`, "m").test(systemMapContent);
+      if (!indexed) {
         unindexed.push(path.relative(DOCS_DIR, path.join(dir, file)));
       }
     }
@@ -778,7 +834,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
 
     // Get doc's last commit SHA — used for the fresh-together check (files
     // co-committed with the doc are considered fresh regardless of anchor).
-    const docLastCommitSha = run(`git log -1 --format=%H -- "${docRelPath}" 2>/dev/null`);
+    const docLastCommitSha = runGit(["log", "-1", "--format=%H", "--", docRelPath]);
     if (!docLastCommitSha) continue; // Not tracked by git — skip
 
     // Staleness anchor: defaults to the doc's own last commit, but overridden
@@ -789,14 +845,19 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       // verified-at is free-form YAML text any agent or human can write — validate
       // it's a hex SHA before interpolating into a shell command. Subprocess cost
       // is one extra spawn per opt-in doc; fine until adoption is widespread.
-      const verified = run(`git rev-parse --verify "${fm.verifiedAt}^{commit}" 2>/dev/null`);
+      const verified = runGit(["rev-parse", "--verify", `${fm.verifiedAt}^{commit}`]);
       if (verified) anchorSha = verified;
     }
 
     // Files co-committed with the doc's own last commit. If a ref appears here,
     // it was updated together with the doc → still considered fresh (fresh-together rule).
+    // Files touched by the doc's last commit ("fresh-together": a ref changed in the
+    // SAME commit as the doc isn't stale). Use diff-tree (first-parent), NOT
+    // `git show --name-only`: on a MERGE commit, show prints only the combined-diff
+    // conflicted paths (often none), so the doc would lose fresh-together suppression
+    // and generate spurious stale flags.
     const docCommitFiles = new Set(
-      (run(`git show --name-only --format="" ${docLastCommitSha} 2>/dev/null`) || "")
+      (runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", docLastCommitSha]) || "")
         .split("\n")
         .filter(Boolean)
     );
@@ -808,9 +869,10 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       if (isIgnoredForStaleness(ref) || isNonSourceStalenessRef(ref)) continue;  // R1
       if (!exists(path.join(ROOT, ref))) continue;
 
-      const refLastSha = run(`git log -1 --format=%H -- "${ref}" 2>/dev/null`);
-      if (!refLastSha || refLastSha === anchorSha) continue;
-      const latestMsg = run(`git log -1 --format=%s ${anchorSha}..HEAD -- "${ref}" 2>/dev/null`);
+      // The latest commit-subject for this ref since the anchor. Empty means the ref
+      // wasn't touched after the anchor (or has no history) — which also subsumes the
+      // old "refLastSha === anchorSha" guard, so we drop that extra git call per ref.
+      const latestMsg = runGit(["log", "-1", "--format=%s", `${anchorSha}..HEAD`, "--", ref]);
       if (!latestMsg) continue;
       if (docCommitFiles.has(ref)) continue;  // fresh-together
 
@@ -819,22 +881,31 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       const extractor = surfaceExtractorFor(ref);
       if (extractor) {
         const headSrc = (() => { try { return fs.readFileSync(path.join(ROOT, ref), "utf-8"); } catch { return ""; } })();
-        const anchorSrc = run(`git show ${anchorSha}:"${ref}" 2>/dev/null`);
+        const anchorSrc = runGit(["show", `${anchorSha}:${ref}`]);
         const headEx = extractor(headSrc);
         const anchorEx = extractor(anchorSrc);
         if (!headEx.opaque && !anchorEx.opaque) {
-          if (setsEqual(anchorEx.names, headEx.names)) continue; // exports unchanged → not stale
-          // exports changed: high if the doc still names a removed symbol.
-          let removed: string | undefined;
-          for (const name of anchorEx.names) {
-            if (name === "default") continue;
-            if (!headEx.names.has(name) && new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(docText)) {
-              removed = name; break;
+          if (headEx.names.size === 0 && anchorEx.names.size === 0) {
+            // No extractable public surface at either revision (side-effect module,
+            // CLI entry, hook). "Both empty" is NOT "exports unchanged" — the file
+            // could have been rewritten entirely. Fall back to quiet timestamp
+            // behavior (low) rather than silently suppressing (the safe direction).
+            staleRefs.push({ ref, latestMsg, severity: "low" });
+          } else if (setsEqual(anchorEx.names, headEx.names)) {
+            continue; // exports unchanged → not stale
+          } else {
+            // exports changed: high if the doc still names a removed symbol.
+            let removed: string | undefined;
+            for (const name of anchorEx.names) {
+              if (name === "default") continue;
+              if (!headEx.names.has(name) && new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(docText)) {
+                removed = name; break;
+              }
             }
+            staleRefs.push(removed
+              ? { ref, latestMsg, severity: "high", removed }
+              : { ref, latestMsg, severity: "medium" });
           }
-          staleRefs.push(removed
-            ? { ref, latestMsg, severity: "high", removed }
-            : { ref, latestMsg, severity: "medium" });
         } else {
           // opaque (export *): can't verify → quiet.
           staleRefs.push({ ref, latestMsg, severity: "low" });
@@ -846,7 +917,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       }
     }
 
-    if (staleRefs.length > 0 && !actions.some(a => a.target.includes(patternFile))) {
+    if (staleRefs.length > 0 && !actions.some(a => a.target === docRelPath)) {
       const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + "…" : s;
       const rank = { high: 3, medium: 2, low: 1 } as const;
       const priority = staleRefs.reduce<"high" | "medium" | "low">(
@@ -995,7 +1066,13 @@ ${actions.map(a => `- [${a.priority}] ${a.type}: ${a.description}`).join("\n") |
 
 function main() {
   const state = detectState();
-  const git = getGitChanges();
+  // Hot-path modes run on EVERY user prompt (session-check) / turn-end (Stop gate)
+  // under a tight hook timeout and never read `git` — skip the 6 git subprocesses
+  // getGitChanges() spawns. (Verified: these blocks contain no `git.` references.)
+  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking"]);
+  const git: GitChanges = GITLESS_MODES.has(MODE)
+    ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] }
+    : getGitChanges();
 
   // ── Explorer tools ──────────────────────────────────────
 
@@ -2119,9 +2196,11 @@ function main() {
   if (MODE === "check") {
     const broken = findBrokenPaths();
     const unindexed = findUnindexedDocs();
-    const missingEntities = getSchemaEntities().filter(
-      e => !getDocumentedEntities().some(d => d.toLowerCase() === e.toLowerCase())
-    );
+    // Hoist getDocumentedEntities() out of the filter — it reads + regex-scans
+    // SYSTEM-MAP, and calling it per schema entity re-read the file N times on this
+    // session-start hot path.
+    const documented = new Set(getDocumentedEntities().map(d => d.toLowerCase()));
+    const missingEntities = getSchemaEntities().filter(e => !documented.has(e.toLowerCase()));
     const totalChanges = git.changedCodeFiles.length + git.newCodeFiles.length + git.deletedCodeFiles.length;
 
     if (JSON_OUT) {
@@ -2197,13 +2276,14 @@ function main() {
       return;
     }
 
-    // MODE === "health"
-    const healthScript = path.join(ROOT, "scripts", "health-score.sh");
-    if (!exists(healthScript)) {
-      process.stdout.write(JSON.stringify({ error: "health-score.sh not found", expectedAt: healthScript }));
+    // MODE === "health" — prefer the plugin's health-score.sh (works on plugin-only
+    // installs; avoids a stale vendored copy). Falls back to a project-local copy.
+    const healthScript = resolveScript("health-score.sh");
+    if (!healthScript) {
+      process.stdout.write(JSON.stringify({ error: "health-score.sh not found (no plugin root or project-local copy)" }));
       return;
     }
-    const raw = run(`bash ${JSON.stringify(healthScript)} ${JSON.stringify(ROOT)} 2>&1`, { timeout: 30000 });
+    const raw = runFile("bash", [healthScript, ROOT], { timeout: 30000 });
     const final = raw.match(/HEALTH SCORE:\s*(\d+)\/100\s*\(([A-F])\s*—\s*([^)]+)\)/);
     const categories: Record<string, { score: number; max: number }> = {};
     const catRegex = /(Structure|Freshness|Completeness|Audit Health|Lint):\s*(\d+)\/(\d+)/g;
@@ -2290,16 +2370,16 @@ function main() {
     healToRun = localHeal;
   }
   if (healToRun) {
-    const healResult = run(`npx tsx ${JSON.stringify(healToRun)} --fix 2>&1 | tail -3`, { timeout: 30000 });
+    const healResult = runFile("npx", ["tsx", healToRun, "--fix"], { timeout: 30000 }).split("\n").slice(-3).join("\n");
     if (healResult.includes("fixed")) {
       console.log(`🔧 ${healResult.trim()}`);
     }
   }
 
-  // Quick health summary
-  const healthScript = path.join(ROOT, "scripts", "health-score.sh");
-  if (exists(healthScript)) {
-    const healthResult = run("bash scripts/health-score.sh 2>&1 | grep 'HEALTH SCORE'", { timeout: 15000 });
+  // Quick health summary — prefer the plugin's health-score.sh (parity with --health).
+  const healthScript = resolveScript("health-score.sh");
+  if (healthScript) {
+    const healthResult = runFile("bash", [healthScript, ROOT], { timeout: 15000 }).split("\n").filter(l => l.includes("HEALTH SCORE")).join("\n");
     if (healthResult) {
       console.log(`${healthResult.trim()}`);
     }
@@ -2323,4 +2403,15 @@ function main() {
   }
 }
 
-main();
+// Fail-open boundary. jeeves.ts runs inside hooks whose contract is "never crash the
+// user's session". Any unguarded fs/git throw (file deleted mid-scan, permission
+// error, ENOENT on a missing docs/ dir) must degrade to a clean exit, not a stack
+// trace injected into hook output. JSON modes already wrote their payload before any
+// late throw; a bare-exit here is the safe floor.
+try {
+  main();
+} catch (e) {
+  if (JSON_OUT) { try { process.stdout.write("{}"); } catch {} }
+  else { try { console.error(`jeeves: ${e instanceof Error ? e.message : String(e)}`); } catch {} }
+  process.exit(0);
+}

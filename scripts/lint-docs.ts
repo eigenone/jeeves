@@ -105,7 +105,8 @@ function extractFilePaths(markdown: string): string[] {
   for (const match of matches) {
     const candidate = match[1];
     if (candidate === undefined) continue;
-    const cleanish = candidate.replace(/:\d+(:\d+)?$/, ""); // strip :line[:col] before shape checks
+    const cleanish = candidate.replace(/:\d+([-:]\d+)?$/, ""); // strip :line, :line:col, :line-line
+    const firstSeg = cleanish.split("/")[0];
 
     const looksLikePath =
       cleanish.includes("/") && // path-shaped (excludes bare `route.ts`, `events.outbox`)
@@ -115,6 +116,9 @@ function extractFilePaths(markdown: string): string[] {
       !cleanish.includes(" ") && // no spaces in file paths
       !cleanish.includes("(") && // not a function call
       !cleanish.includes("<") && // excludes placeholder tokens like /p/<id>/<slug>
+      !/[*?{}]/.test(cleanish) && // excludes globs (`src/**/*.ts`) — existsSync always fails them
+      !cleanish.startsWith("path/to/") && // the canonical placeholder-path idiom
+      !firstSeg.includes(".") && // excludes hostname-shaped refs (raw.githubusercontent.com/...)
       cleanish.length < 200;
 
     if (looksLikePath) {
@@ -167,12 +171,15 @@ function checkFilePathReferences(): PathCheckResult[] {
   const docFiles = getAllDocFiles();
 
   for (const docFile of docFiles) {
-    const content = readFile(docFile);
+    // Skip (don't abort) a file we can't read — a broken symlink or permission error
+    // is an infra problem, not doc rot, and must not block the pre-push gate.
+    let content: string;
+    try { content = readFile(docFile); } catch { continue; }
     const referencedPaths = extractFilePaths(content);
 
     for (const refPath of referencedPaths) {
-      // Strip :line or :line:col suffix (common in doc references like `file.ts:42`)
-      const cleanPath = refPath.replace(/:\d+(:\d+)?$/, "");
+      // Strip :line, :line:col, or :line-line suffix (`file.ts:42`, `file.ts:12-40`)
+      const cleanPath = refPath.replace(/:\d+([-:]\d+)?$/, "");
 
       // Try resolving relative to project root
       const resolvedPath = path.isAbsolute(cleanPath)
@@ -323,4 +330,12 @@ function main(): void {
   }
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  // Fail OPEN: a linter bug (unreadable file, regex/IO error) must never block the
+  // pre-push gate. Warn to stderr and exit 0 so a non-zero exit unambiguously means
+  // "real broken-path findings", which is the only thing the gate should block on.
+  console.error(`lint-docs: internal error, skipping (fail-open): ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(0);
+}

@@ -30,6 +30,12 @@ fi
 
 prompts=0; last_block_turn=0; block_count=0; head_at_last_check=""; since=""; last_commit_prompt=0
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
+# Coerce counters to clean integers after sourcing — a corrupt/hand-edited value must
+# not break the arithmetic below or let the block ceiling be bypassed.
+for _v in prompts last_block_turn block_count last_commit_prompt; do
+  eval "_cur=\${$_v}"
+  case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
+done
 turn=$prompts
 
 # Use the per-session baseline + last-commit index recorded by session-check

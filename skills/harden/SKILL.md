@@ -20,7 +20,9 @@ npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --verify
 Execute the verify actions (check comment claims against code).
 
 ```bash
-npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts
+# Prefer the project's own linter if it ships one (a customization point the
+# pre-push gate also prefers), so /harden and the gate agree; else the plugin's.
+[ -f scripts/lint-docs.ts ] && npx tsx scripts/lint-docs.ts || npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts
 ```
 Fix any broken paths found.
 

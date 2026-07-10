@@ -4,10 +4,10 @@ description: Jeeves behavioral rules — session start protocol, continuous capt
 user-invocable: false
 ---
 
-# Jeeves Rules (v4.3.0)
+# Jeeves Rules
 
 ## Session Start (BEFORE anything else)
-1. Run `npx tsx scripts/jeeves.ts --check` — this tells you the KB state, what's stale, what's missing
+1. Run `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --check` — this tells you the KB state, what's stale, what's missing
 2. Read `thinking/INDEX.md` — decisions, open questions, active topics
 3. Read `docs/internal/log.md` — last 5 entries
 4. Read `docs/internal/SYSTEM-MAP.md` — your map of the codebase
@@ -32,7 +32,7 @@ Write to disk every 3-4 exchanges. The user may close the tab at any time.
 
 ## After Building Something
 At every natural pause (finished a feature, about to commit, switching tasks):
-1. Run `npx tsx scripts/jeeves.ts` — it analyzes what changed and tells you exactly what to document
+1. Run `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts` — it analyzes what changed and tells you exactly what to document
 2. Execute every ACTION it outputs — create pattern docs, update SYSTEM-MAP, fix broken paths
 3. Do not skip actions. Do not summarize them. Execute each one.
 
@@ -41,7 +41,7 @@ The post-commit hook runs Jeeves automatically. If it outputs actions, execute t
 
 ## Session End
 When the user says "I'm done", "wrapping up", "handoff", or signals end of session:
-1. Run `npx tsx scripts/jeeves.ts --handoff` — this syncs all docs AND writes a handoff file
+1. Run `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --handoff` — this syncs all docs AND writes a handoff file
 2. The handoff goes to `thinking/sessions/YYYY-MM-DD-handoff.md` with what happened, next steps, and open questions
 3. Update `thinking/INDEX.md` with decisions confirmed and open questions from this session
 4. Update relevant `thinking/topics/` files with latest state
@@ -56,19 +56,19 @@ When you discover something non-obvious — update the relevant doc before movin
 - **New pattern (something you did 2+ times)?** → Create `docs/internal/patterns/<name>.md`
 
 ## Pre-Push
-Before pushing: `npx tsx scripts/lint-docs.ts` — fix any broken paths first.
+Before pushing: run the doc linter — `npx tsx scripts/lint-docs.ts` if the project ships its own (a customization point the pre-push gate also prefers), otherwise `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts`. Fix any broken paths first.
 
 ## On Demand
 | What to say | What runs |
 |-------------|-----------|
-| "jeeves" or "sync docs" | `npx tsx scripts/jeeves.ts` |
-| "handoff" or "wrap up" | `npx tsx scripts/jeeves.ts --handoff` |
-| "health check" | `bash scripts/health-score.sh` |
-| "heal docs" | `npx tsx scripts/heal-docs.ts --fix` |
+| "jeeves" or "sync docs" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts` |
+| "handoff" or "wrap up" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --handoff` |
+| "health check" | `bash ${CLAUDE_PLUGIN_ROOT}/scripts/health-score.sh` |
+| "heal docs" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/heal-docs.ts --fix` |
 | "audit" | Scan code for bugs, write to `codebase-audit.md` |
-| "rebuild index" or "concept index" | `npx tsx scripts/jeeves.ts --index` |
-| "annotate" or "add comments" | `npx tsx scripts/jeeves.ts --annotate` — finds under-commented complex code, tells you where to add WHY comments |
-| "verify comments" | `npx tsx scripts/jeeves.ts --verify` — finds comments that make claims, tells you to check them against actual code |
+| "rebuild index" or "concept index" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --index` |
+| "annotate" or "add comments" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --annotate` — finds under-commented complex code, tells you where to add WHY comments |
+| "verify comments" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --verify` — finds comments that make claims, tells you to check them against actual code |
 
 ## Update Before Create
 Before creating a new doc, check if an existing doc covers the topic. UPDATE existing docs.
