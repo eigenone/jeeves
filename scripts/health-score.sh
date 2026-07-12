@@ -290,13 +290,18 @@ LINT_MAX=15
 echo ""
 echo "── 5. Lint (/15) ──"
 
-# Resolve the linter: a project-local copy (a customization point) first, then the
-# PLUGIN's own copy. Without the plugin fallback, plugin installs (which keep the
-# linter in the plugin cache, not scripts/) scored 0/15 lint forever even on a
-# perfectly clean KB, and the top recommendation was "fix lint errors" with none.
+# Resolve the linter. Order: project-local (a customization point), then a SIBLING of
+# this script, then $CLAUDE_PLUGIN_ROOT. The sibling fallback is the important one —
+# lint-docs.ts always ships in the same scripts/ dir as health-score.sh, so it resolves
+# whether this runs via the MCP tool, the skill, or a bare `bash health-score.sh`, with
+# or without CLAUDE_PLUGIN_ROOT set. Without it, standalone runs scored 0/15 while the
+# MCP path scored 15/15 — the two health impls disagreed (UBQT/kinara report).
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 LINT_SCRIPT=""
 if [ -f "$ROOT/scripts/lint-docs.ts" ]; then
   LINT_SCRIPT="$ROOT/scripts/lint-docs.ts"
+elif [ -n "${SELF_DIR:-}" ] && [ -f "$SELF_DIR/lint-docs.ts" ]; then
+  LINT_SCRIPT="$SELF_DIR/lint-docs.ts"
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts" ]; then
   LINT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts"
 fi
@@ -317,7 +322,7 @@ if [ -n "$LINT_SCRIPT" ]; then
     echo "  ✗ Lint has errors ($LINT_ERRORS issues)"
     LINT_SCORE=$((LINT_SCORE + 2))
   fi
-elif [ -f "$ROOT/scripts/heal-docs.ts" ] || { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/heal-docs.ts" ]; }; then
+elif [ -f "$ROOT/scripts/heal-docs.ts" ] || [ -f "$SELF_DIR/heal-docs.ts" ] || { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/heal-docs.ts" ]; }; then
   echo "  ✓ Heal script available (no separate lint)"
   LINT_SCORE=$((LINT_SCORE + 5))
 else
