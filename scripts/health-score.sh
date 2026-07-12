@@ -290,12 +290,23 @@ LINT_MAX=15
 echo ""
 echo "── 5. Lint (/15) ──"
 
+# Resolve the linter: a project-local copy (a customization point) first, then the
+# PLUGIN's own copy. Without the plugin fallback, plugin installs (which keep the
+# linter in the plugin cache, not scripts/) scored 0/15 lint forever even on a
+# perfectly clean KB, and the top recommendation was "fix lint errors" with none.
+LINT_SCRIPT=""
 if [ -f "$ROOT/scripts/lint-docs.ts" ]; then
-  echo "  ✓ Lint script exists"
+  LINT_SCRIPT="$ROOT/scripts/lint-docs.ts"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts" ]; then
+  LINT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/lint-docs.ts"
+fi
+
+if [ -n "$LINT_SCRIPT" ]; then
+  echo "  ✓ Lint available"
   LINT_SCORE=$((LINT_SCORE + 5))
 
-  # Try running it
-  LINT_OUTPUT=$(npx tsx "$ROOT/scripts/lint-docs.ts" 2>&1)
+  # Pass $ROOT explicitly (lint-docs reads argv[2] as project root).
+  LINT_OUTPUT=$(npx tsx "$LINT_SCRIPT" "$ROOT" 2>&1)
   LINT_EXIT=$?
 
   if [ $LINT_EXIT -eq 0 ]; then
@@ -306,8 +317,8 @@ if [ -f "$ROOT/scripts/lint-docs.ts" ]; then
     echo "  ✗ Lint has errors ($LINT_ERRORS issues)"
     LINT_SCORE=$((LINT_SCORE + 2))
   fi
-elif [ -f "$ROOT/scripts/heal-docs.ts" ]; then
-  echo "  ✓ Heal script exists (no separate lint)"
+elif [ -f "$ROOT/scripts/heal-docs.ts" ] || { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/heal-docs.ts" ]; }; then
+  echo "  ✓ Heal script available (no separate lint)"
   LINT_SCORE=$((LINT_SCORE + 5))
 else
   echo "  ✗ No lint or heal script"

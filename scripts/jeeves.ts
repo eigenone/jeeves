@@ -41,7 +41,7 @@ const ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-const MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"] as const;
+const MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 function argVal(flag: string): string | undefined {
@@ -2060,6 +2060,81 @@ function main() {
     return;
   }
 
+  if (MODE === "init") {
+    // Scaffold the code-mode KB skeleton, then emit instructions for the agent to
+    // populate it from the codebase. Idempotent: never clobber an existing KB.
+    if (exists(DOCS_DIR)) {
+      console.log(`\n🤵 Jeeves — already initialized (docs/internal/ exists). Nothing to scaffold.`);
+      console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.\n`);
+      return;
+    }
+    const projectName = path.basename(ROOT);
+    fs.mkdirSync(PATTERNS_DIR, { recursive: true });
+    fs.mkdirSync(DECISIONS_DIR, { recursive: true });
+    // SYSTEM-MAP with all 7 canonical sections present (so structure scores + the
+    // agent has a frame to fill). Placeholders are HTML comments, not {{tokens}}.
+    fs.writeFileSync(SYSTEM_MAP,
+`# SYSTEM-MAP.md — ${projectName}
+
+Master entry point for agents and developers. Read this file first.
+
+<!-- Jeeves KB. Populate each section from the codebase (see \`jeeves --init\` output). -->
+
+## 1. Product Overview
+<!-- 2-3 sentences: what this is, what it does, who it's for. -->
+
+## 2. Entity / Feature Registry
+| Entity | Purpose | Schema/Model | API Route | UI Path |
+|--------|---------|-------------|-----------|---------|
+
+## 3. Architecture Layers
+<!-- Text diagram of data flow (DB -> API -> cache -> client, etc.). -->
+
+## 4. File Map
+| Path | Owns |
+|------|------|
+
+## 5. Pattern Index
+| If you're trying to... | Read |
+|------------------------|------|
+
+## 6. Decision Index
+| Before you change... | Read |
+|----------------------|------|
+
+## 7. Known Gaps & Debt
+<!-- Bugs, tech debt, TODOs worth tracking. -->
+`);
+    fs.writeFileSync(LOG_FILE,
+`# Activity Log
+
+Append-only chronological record of KB activity. Newest at top.
+
+## Entries
+## [${today()}] INIT | Knowledge base scaffolded via \`jeeves --init\`.
+`);
+    console.log(`\n🤵 Jeeves — initialized ${projectName}\n`);
+    console.log(`Scaffolded:`);
+    console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
+    console.log(`  docs/internal/log.md          (activity log)`);
+    console.log(`  docs/internal/patterns/       (empty)`);
+    console.log(`  docs/internal/decisions/      (empty)\n`);
+    console.log(`NEXT — populate the KB from this codebase (do these now, don't ask):`);
+    console.log(`  1. Explore the repo (packages/apps, routes, data models, key modules).`);
+    console.log(`  2. Fill SYSTEM-MAP.md sections 1-7: product overview, entity/feature`);
+    console.log(`     registry, architecture layers, file map. Leave Pattern/Decision`);
+    console.log(`     indexes to grow as you add docs.`);
+    console.log(`  3. Write docs/internal/decisions/<slug>.md for each non-obvious`);
+    console.log(`     architectural choice; docs/internal/patterns/<slug>.md for each`);
+    console.log(`     repeated pattern. Link them from SYSTEM-MAP sections 5 & 6.`);
+    console.log(`  4. Run \`jeeves --index\` to build the concept index.`);
+    console.log(`  5. OPTIONAL: add a Jeeves stanza to CLAUDE.md pointing at`);
+    console.log(`     docs/internal/SYSTEM-MAP.md + the session-start protocol (Jeeves`);
+    console.log(`     does not own CLAUDE.md; this is just a pointer).`);
+    console.log(`  6. Commit docs/internal/ so freshness reflects reality.\n`);
+    return;
+  }
+
   if (MODE === "bootstrap-thinking") {
     const dirs = ["sessions", "topics", "decisions"].map(d => path.join(THINKING_DIR, d));
     for (const d of dirs) fs.mkdirSync(d, { recursive: true });
@@ -2311,7 +2386,17 @@ function main() {
     return;
   }
 
-  // Full sync or handoff
+  // Full sync or handoff.
+  // Not-initialized guard: with no docs/internal/ or thinking/, there's no KB to sync.
+  // Reporting "everything is in order" here is a false success (the #1 bootstrap
+  // complaint) — point the user at init instead.
+  if (state.mode === "none") {
+    console.log(`\n🤵 Jeeves — not initialized\n`);
+    console.log(`No knowledge base found (no docs/internal/ or thinking/). Nothing to sync yet.`);
+    console.log(`Run \`jeeves --init\` (or /jeeves:init) to scaffold the KB and populate it from this codebase.\n`);
+    return;
+  }
+
   const actions = generateActions(state, git);
 
   console.log(`\n🤵 Jeeves — ${MODE === "handoff" ? "Handoff" : "Sync"}\n`);

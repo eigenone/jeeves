@@ -32,7 +32,7 @@ var ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-var MODES = ["handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"];
+var MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"];
 var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
 var JSON_OUT = process.argv.includes("--json");
 function argVal(flag) {
@@ -1591,6 +1591,86 @@ You're starting fresh. All topics, sessions, and decisions are archived.
     process.stdout.write(isThinkingCandidate() ? "yes" : "no");
     return;
   }
+  if (MODE === "init") {
+    if (exists(DOCS_DIR)) {
+      console.log(`
+\u{1F935} Jeeves \u2014 already initialized (docs/internal/ exists). Nothing to scaffold.`);
+      console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.
+`);
+      return;
+    }
+    const projectName = path.basename(ROOT);
+    fs.mkdirSync(PATTERNS_DIR, { recursive: true });
+    fs.mkdirSync(DECISIONS_DIR, { recursive: true });
+    fs.writeFileSync(
+      SYSTEM_MAP,
+      `# SYSTEM-MAP.md \u2014 ${projectName}
+
+Master entry point for agents and developers. Read this file first.
+
+<!-- Jeeves KB. Populate each section from the codebase (see \`jeeves --init\` output). -->
+
+## 1. Product Overview
+<!-- 2-3 sentences: what this is, what it does, who it's for. -->
+
+## 2. Entity / Feature Registry
+| Entity | Purpose | Schema/Model | API Route | UI Path |
+|--------|---------|-------------|-----------|---------|
+
+## 3. Architecture Layers
+<!-- Text diagram of data flow (DB -> API -> cache -> client, etc.). -->
+
+## 4. File Map
+| Path | Owns |
+|------|------|
+
+## 5. Pattern Index
+| If you're trying to... | Read |
+|------------------------|------|
+
+## 6. Decision Index
+| Before you change... | Read |
+|----------------------|------|
+
+## 7. Known Gaps & Debt
+<!-- Bugs, tech debt, TODOs worth tracking. -->
+`
+    );
+    fs.writeFileSync(
+      LOG_FILE,
+      `# Activity Log
+
+Append-only chronological record of KB activity. Newest at top.
+
+## Entries
+## [${today()}] INIT | Knowledge base scaffolded via \`jeeves --init\`.
+`
+    );
+    console.log(`
+\u{1F935} Jeeves \u2014 initialized ${projectName}
+`);
+    console.log(`Scaffolded:`);
+    console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
+    console.log(`  docs/internal/log.md          (activity log)`);
+    console.log(`  docs/internal/patterns/       (empty)`);
+    console.log(`  docs/internal/decisions/      (empty)
+`);
+    console.log(`NEXT \u2014 populate the KB from this codebase (do these now, don't ask):`);
+    console.log(`  1. Explore the repo (packages/apps, routes, data models, key modules).`);
+    console.log(`  2. Fill SYSTEM-MAP.md sections 1-7: product overview, entity/feature`);
+    console.log(`     registry, architecture layers, file map. Leave Pattern/Decision`);
+    console.log(`     indexes to grow as you add docs.`);
+    console.log(`  3. Write docs/internal/decisions/<slug>.md for each non-obvious`);
+    console.log(`     architectural choice; docs/internal/patterns/<slug>.md for each`);
+    console.log(`     repeated pattern. Link them from SYSTEM-MAP sections 5 & 6.`);
+    console.log(`  4. Run \`jeeves --index\` to build the concept index.`);
+    console.log(`  5. OPTIONAL: add a Jeeves stanza to CLAUDE.md pointing at`);
+    console.log(`     docs/internal/SYSTEM-MAP.md + the session-start protocol (Jeeves`);
+    console.log(`     does not own CLAUDE.md; this is just a pointer).`);
+    console.log(`  6. Commit docs/internal/ so freshness reflects reality.
+`);
+    return;
+  }
   if (MODE === "bootstrap-thinking") {
     const dirs = ["sessions", "topics", "decisions"].map((d) => path.join(THINKING_DIR, d));
     for (const d of dirs) fs.mkdirSync(d, { recursive: true });
@@ -1801,6 +1881,15 @@ You're starting fresh. All topics, sessions, and decisions are archived.
       recommendations
     } : { error: "Could not parse health score", raw: raw.slice(0, 800) };
     process.stdout.write(JSON.stringify(payload));
+    return;
+  }
+  if (state.mode === "none") {
+    console.log(`
+\u{1F935} Jeeves \u2014 not initialized
+`);
+    console.log(`No knowledge base found (no docs/internal/ or thinking/). Nothing to sync yet.`);
+    console.log(`Run \`jeeves --init\` (or /jeeves:init) to scaffold the KB and populate it from this codebase.
+`);
     return;
   }
   const actions = generateActions(state, git);

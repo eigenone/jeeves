@@ -390,26 +390,33 @@ function main() {
 
   // A fix is auto-applied ONLY if it is trustworthy AND safe on every axis.
   // Everything else is downgraded to a report-only suggestion.
-  function isAutoApplicable(b: BrokenRef): boolean {
-    if (!b.suggestion) return false;
+  // Returns null if the fix is safe to auto-apply, else a human-readable reason it was
+  // held back. Surfacing the reason (not just "high confidence" then "no auto-fixable")
+  // fixes the contradictory messaging: a monorepo cross-package move is high-confidence
+  // but deliberately NOT applied, and the report should say so.
+  function blockReason(b: BrokenRef): string | null {
+    if (!b.suggestion) return "no candidate found";
     // 1. Trustworthy source: git rename, or a single unambiguous same-name move.
     const trustworthy = b.source === "renamed" || (b.source === "moved" && b.confidence === "high");
-    if (!trustworthy) return false;
+    if (!trustworthy) return `${b.confidence}-confidence ${b.source} — too ambiguous to auto-apply`;
     // 2. Never cross a package/app boundary.
-    if (crossesPackage(b.brokenPath, b.suggestion)) return false;
+    if (crossesPackage(b.brokenPath, b.suggestion)) return "crosses a package/app boundary — confirm the target is right";
     // 3. Never rewrite a path described as historical/retired. Check the ENCLOSING
     //    BLOCK, not just the ref's own line: the "Deleted in v2:\n- `x.ts`" idiom
     //    puts the marker on the header line, not the path line. Strip the backtick
     //    path token(s) first so filename tokens (e.g. "old" in "scripts/old.ts")
     //    don't self-trigger — only prose words matter.
     const contextWithoutPath = b.context.split(`\`${b.brokenPath}\``).join("");
-    if (hasHistoricalMarker(contextWithoutPath)) return false;
+    if (hasHistoricalMarker(contextWithoutPath)) return "surrounding text marks this path as historical/retired";
     // 4. Never auto-edit append-only logs or dated plan/spec/decision/session docs.
-    if (isHistoricalDoc(b.docPath)) return false;
+    if (isHistoricalDoc(b.docPath)) return "append-only or dated doc (log/plan/spec/decision/session)";
     // 5. Honor explicit opt-out (line marker or archived/superseded frontmatter).
-    if (hasIgnoreMarker(b.lineText)) return false;
-    if (b.docArchived) return false;
-    return true;
+    if (hasIgnoreMarker(b.lineText)) return "explicit <!-- heal-docs:ignore --> on the line";
+    if (b.docArchived) return "doc is archived / superseded";
+    return null;
+  }
+  function isAutoApplicable(b: BrokenRef): boolean {
+    return b.suggestion != null && blockReason(b) === null;
   }
 
   console.log("=== Heal Docs Report ===\n");
@@ -443,6 +450,7 @@ function main() {
       console.log(`  ${b.docPath}:${b.lineNumber}`);
       console.log(`    ✗ ${b.brokenPath}`);
       console.log(`    ? ${b.suggestion} (${b.source}, ${b.confidence} confidence)`);
+      console.log(`      held back: ${blockReason(b)}`);
     }
   }
 
