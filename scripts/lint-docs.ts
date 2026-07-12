@@ -142,16 +142,23 @@ function checkFilePathReferences(): PathCheckResult[] {
     for (const refPath of referencedPaths) {
       const cleanPath = stripLineSuffix(refPath); // `file.ts:42`, `file.ts:12-40`
 
-      // Try resolving relative to project root
-      const resolvedPath = path.isAbsolute(cleanPath)
-        ? cleanPath
-        : path.join(projectRoot, cleanPath);
+      // Multi-base resolution. A ref is valid if it exists relative to ANY of:
+      //   - repo root         → code refs like `src/x.ts`
+      //   - the doc's own dir  → doc-relative `./sibling.md` / `../y.md`
+      //   - docs/internal/     → KB-relative `decisions/x.md` (matches the SYSTEM-MAP
+      //                          index convention that Check 2 expects)
+      // This reconciles Check 1 vs Check 2 and lets docs use concise intra-KB links.
+      const bases = [projectRoot, path.dirname(docFile), DOCS_DIR];
+      const candidates = path.isAbsolute(cleanPath)
+        ? [cleanPath]
+        : bases.map(b => path.join(b, cleanPath));
+      const hit = candidates.find(existsExactCase);
 
       results.push({
         doc: path.relative(projectRoot, docFile),
         referencedPath: refPath,
-        resolvedPath,
-        exists: existsExactCase(resolvedPath)
+        resolvedPath: hit ?? candidates[0], // report the repo-root candidate when missing
+        exists: hit != null,
       });
     }
   }

@@ -25,9 +25,14 @@ export function stripLineSuffix(ref: string): string {
 /** True if `token` (raw backtick content) is a path-shaped source-file reference. */
 export function isFileRef(token: string): boolean {
   const cleanish = stripLineSuffix(token);
-  const firstSeg = cleanish.split("/")[0];
+  // A leading ./ or ../ is an explicit doc-relative KB link (`./auth-model.md`). Strip
+  // it for the shape checks; its presence alone makes the token "path-shaped".
+  const isRelative = /^\.\.?\//.test(cleanish);
+  const rel = cleanish.replace(/^(\.\.?\/)+/, "");
+  const multiSeg = rel.includes("/");
+  const firstSeg = rel.split("/")[0];
   return (
-    cleanish.includes("/") && // path-shaped (excludes bare `route.ts`, `events.outbox`)
+    (isRelative || multiSeg) && // path-shaped: has "/" OR is explicitly ./relative (excludes bare `route.ts`)
     !cleanish.startsWith("/") && // excludes URL routes (/api/..., /flows)
     SOURCE_EXT.test(cleanish) && // ends in a real source/asset/config extension
     !/^https?:\/\//.test(cleanish) && // URLs
@@ -38,7 +43,7 @@ export function isFileRef(token: string): boolean {
     !cleanish.includes("<") && // placeholder tokens like /p/<id>/<slug>
     !/[*?{}]/.test(cleanish) && // globs (existsSync always fails them)
     !cleanish.startsWith("path/to/") && // the canonical placeholder-path idiom
-    !firstSeg.includes(".") && // hostname-shaped (raw.githubusercontent.com/...)
+    !(multiSeg && firstSeg.includes(".")) && // hostname-shaped first segment (raw.githubusercontent.com/...) — only for multi-segment, so a single relative file `./x.md` isn't excluded by its own extension dot
     cleanish.length < 200
   );
 }

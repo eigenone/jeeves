@@ -135,6 +135,12 @@ if git -C "$ROOT" rev-parse --git-dir > /dev/null 2>&1; then
   # Check how many code files changed since last doc update
   CHANGED_FILES=$(git -C "$ROOT" diff --name-only $(git -C "$ROOT" log --format="%H" -1 -- docs/internal/ 2>/dev/null)..HEAD -- lib/ app/ apps/ workers/ components/ prisma/ widget/ src/ packages/ server/ services/ 2>/dev/null | wc -l | tr -d ' ')
   echo "  $CHANGED_FILES code files changed since last doc update"
+
+  # Actionable: uncommitted docs don't count toward freshness (no commit date). Say so.
+  UNCOMMITTED_DOCS=$(git -C "$ROOT" status --porcelain -- docs/internal/ 2>/dev/null | grep -c '\.md$' || true)
+  if [ "${UNCOMMITTED_DOCS:-0}" -gt 0 ]; then
+    echo "  → $UNCOMMITTED_DOCS uncommitted doc change(s) — commit docs/internal/ so freshness reflects reality"
+  fi
 else
   echo "  ? Not a git repo — cannot assess freshness"
   FRESH_SCORE=12
@@ -146,11 +152,14 @@ TOTAL_WEIGHT=$((TOTAL_WEIGHT + FRESH_MAX))
 
 # ── 3. Completeness Score (weight: 25) ───────────────────────────
 
+# Completeness scores KB DOC QUALITY only (system-map sections, no TODOs, gotcha
+# coverage) = 15. CLAUDE.md/tooling integration moved OUT to an unscored Integration
+# section below — it's repo setup, not KB quality (kinara/team feedback).
 COMP_SCORE=0
-COMP_MAX=25
+COMP_MAX=15
 
 echo ""
-echo "── 3. Completeness (/25) ──"
+echo "── 3. Completeness (/15) ──"
 
 # Check system map has all 7 sections
 if [ -f "$DOCS_DIR/SYSTEM-MAP.md" ]; then
@@ -198,37 +207,33 @@ if [ "$PATTERN_COUNT" -gt 0 ]; then
   fi
 fi
 
-# Check CLAUDE.md integration
-CLAUDE_FILE=""
-for candidate in "$ROOT/CLAUDE.md" "$ROOT/claude.md"; do
-  if [ -f "$candidate" ]; then
-    CLAUDE_FILE="$candidate"
-    break
-  fi
-done
-
-if [ -n "$CLAUDE_FILE" ]; then
-  if grep -q "SYSTEM-MAP" "$CLAUDE_FILE" 2>/dev/null; then
-    echo "  ✓ CLAUDE.md points to system map"
-    COMP_SCORE=$((COMP_SCORE + 5))
-  else
-    echo "  ✗ CLAUDE.md exists but doesn't reference system map"
-    COMP_SCORE=$((COMP_SCORE + 1))
-  fi
-
-  if grep -q "File It Back\|file it back\|file-it-back" "$CLAUDE_FILE" 2>/dev/null; then
-    echo "  ✓ CLAUDE.md has 'file it back' rule"
-    COMP_SCORE=$((COMP_SCORE + 5))
-  else
-    echo "  ✗ CLAUDE.md missing 'file it back' rule"
-  fi
-else
-  echo "  ✗ No CLAUDE.md found"
-fi
-
 echo "  Score: $COMP_SCORE/$COMP_MAX"
 TOTAL_SCORE=$((TOTAL_SCORE + COMP_SCORE))
 TOTAL_WEIGHT=$((TOTAL_WEIGHT + COMP_MAX))
+
+# ── Integration (informational — NOT scored) ─────────────────────
+# CLAUDE.md pointing at the KB helps agents use it, but it's repo/agent config,
+# orthogonal to KB quality — so it's reported here, never docked from the score.
+echo ""
+echo "── Integration (informational, not scored) ──"
+CLAUDE_FILE=""
+for candidate in "$ROOT/CLAUDE.md" "$ROOT/claude.md"; do
+  [ -f "$candidate" ] && { CLAUDE_FILE="$candidate"; break; }
+done
+if [ -n "$CLAUDE_FILE" ]; then
+  if grep -q "SYSTEM-MAP" "$CLAUDE_FILE" 2>/dev/null; then
+    echo "  ✓ CLAUDE.md points to the system map"
+  else
+    echo "  · CLAUDE.md doesn't reference SYSTEM-MAP — consider adding a pointer to docs/internal/SYSTEM-MAP.md"
+  fi
+  if grep -q "File It Back\|file it back\|file-it-back" "$CLAUDE_FILE" 2>/dev/null; then
+    echo "  ✓ CLAUDE.md has a 'file it back' rule"
+  else
+    echo "  · CLAUDE.md has no 'file it back' rule — consider adding the session-start/capture protocol"
+  fi
+else
+  echo "  · No CLAUDE.md — optional: add one pointing at docs/internal/SYSTEM-MAP.md (helps agents find the KB)"
+fi
 
 # ── 4. Audit Health (weight: 20) ─────────────────────────────────
 
@@ -360,7 +365,7 @@ printf "║  HEALTH SCORE: %3d/100  (%s — %s)       ║\n" "$FINAL_PCT" "$GRAD
 echo "╠══════════════════════════════════════════════╣"
 printf "║  Structure:    %2d/15                        ║\n" "$STRUCT_SCORE"
 printf "║  Freshness:    %2d/25                        ║\n" "$FRESH_SCORE"
-printf "║  Completeness: %2d/25                        ║\n" "$COMP_SCORE"
+printf "║  Completeness: %2d/15                        ║\n" "$COMP_SCORE"
 printf "║  Audit Health: %2d/20                        ║\n" "$AUDIT_SCORE"
 printf "║  Lint:         %2d/15                        ║\n" "$LINT_SCORE"
 echo "╚══════════════════════════════════════════════╝"
@@ -370,7 +375,7 @@ echo ""
 echo "Recommendations:"
 if [ "$STRUCT_SCORE" -lt 10 ]; then echo "  → Add more pattern/decision docs (run full bootstrap)"; fi
 if [ "$FRESH_SCORE" -lt 15 ]; then echo "  → Run incremental update (detect-changes.sh → prompts/11)"; fi
-if [ "$COMP_SCORE" -lt 15 ]; then echo "  → Run quality gate (prompts/10) and fix gaps"; fi
+if [ "$COMP_SCORE" -lt 10 ]; then echo "  → Fill SYSTEM-MAP sections, clear (TODO)s, add Gotchas to pattern docs"; fi
 if [ "$AUDIT_SCORE" -lt 10 ]; then echo "  → Run codebase audit (prompts/05) or resolve existing issues"; fi
 if [ "$LINT_SCORE" -lt 10 ]; then echo "  → Fix lint errors (npx tsx scripts/lint-docs.ts)"; fi
 if [ "$FINAL_PCT" -ge 90 ]; then echo "  → Knowledge base is healthy. Keep filing back!"; fi

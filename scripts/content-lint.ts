@@ -1,19 +1,32 @@
 /**
- * content-lint.ts — Content-level lint for knowledge base docs
+ * content-lint.ts — Content-level lint for knowledge base docs (report-only, advisory).
+ * Doc QUALITY, not broken paths (that's lint-docs.ts, which gates pushes). content-lint
+ * NEVER blocks — it reports at three severities so you can triage.
  *
- * Goes beyond file-path lint to check doc QUALITY:
- * 1. Frontmatter presence and completeness
- * 2. Required sections per doc type
- * 3. Orphan pages (not linked from system map or any other doc)
- * 4. Missing cross-references (files in related[] that don't exist)
- * 5. Index completeness with summaries
- * 6. Activity log freshness
+ * ── SPEC (canonical; the templates in toolkit/templates/ are the source of truth) ──
  *
- * The JUDGMENT checks (contradictions, stale claims) stay in prompt 17.
- * This script handles the MECHANICAL checks.
+ * Severity:
+ *   error   — a required element is missing. Frontmatter is REQUIRED on pattern +
+ *             decision docs; its absence is the only error content-lint raises.
+ *   warning — a recommended element is missing (frontmatter field, section, orphan,
+ *             dangling related[] ref). Should fix; won't block anything.
+ *   info    — a soft nudge (few gotchas, thin activity log).
+ *
+ * Required frontmatter fields:
+ *   pattern  : title, type, created, updated, tags, related
+ *   decision : title, type, created, updated, tags, related, status
+ *
+ * Recommended sections (mirror the templates; matched leniently, case-insensitive):
+ *   pattern  : "What this is", "How it works", "Key files",
+ *              "Follow this pattern", "Gotchas"   (template also: "Related docs")
+ *   decision : "Decision", "Context", "Why we chose", "Consequences",
+ *              "thinking about changing"           (template also: "Options considered")
+ *
+ * Other checks: orphan pages (warning), dangling related[] refs (warning), index
+ * summary quality (info), activity-log freshness (info).
  *
  * Usage:
- *   npx tsx scripts/content-lint.ts           # Run all checks (report-only)
+ *   npx tsx scripts/content-lint.ts           # run all checks (report-only)
  */
 
 import * as fs from "fs";
@@ -126,6 +139,9 @@ function checkFrontmatter() {
 }
 
 // ── Check 2: Required sections ───────────────────────────────
+// NOTE: these arrays mirror the headings in toolkit/templates/{pattern,decision}.template.md
+// (see the SPEC in the file header). Matched leniently (substring, case-insensitive)
+// and reported as warnings, never errors. Keep them in sync with the templates.
 
 function checkRequiredSections() {
   const patternDir = path.join(DOCS_DIR, "patterns");
@@ -283,7 +299,9 @@ function main() {
     process.exit(1);
   }
 
-  console.log("=== Content Lint Report ===\n");
+  console.log("=== Content Lint Report ===");
+  console.log("(advisory — never blocks. error = required element missing (frontmatter);");
+  console.log(" warning = recommended element missing (field/section/link); info = soft nudge.)\n");
 
   checkFrontmatter();
   checkRequiredSections();
