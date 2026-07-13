@@ -47,7 +47,7 @@ fi
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0; kb_offered=0
 # Sourcing the state file evaluates it as shell. Defense in depth: (1) values are
 # sanitized to safe character classes BEFORE they are ever written (see below), so
 # nothing shell-active can enter the file; (2) after loading we coerce every counter
@@ -55,7 +55,7 @@ last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned
 # bypass the block ceiling. STATE is keyed on a sanitized session id under /tmp
 # (sticky bit, same-UID). Not for multi-tenant; fine for single-user dev.
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
-for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected; do
+for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected kb_offered; do
   eval "_cur=\${$_v}"
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
 done
@@ -176,6 +176,19 @@ if [ "$memory_protocol_injected" != "1" ] && { [ -d "$CWD/memory" ] || [ "$MODE"
   memory_protocol_injected=1
 fi
 
+# --- Fresh-code-repo bootstrap OFFER (ask-dont-gate) ---
+# Jeeves installed but this repo is uninitialized: code present, but no KB and no thinking/
+# (MODE=none) and it is NOT a thinking-candidate (CAND=no → ≥3 source files → a real code
+# repo, not a notes/empty dir, which auto-bootstraps thinking/ above). ASK the user to set up
+# — do not gate, do not silently scaffold (a code KB needs real population). Once per session
+# (kb_offered) UNTIL acted on; a persistent `.jeeves-no-kb` opt-out file silences it for good.
+# CAND is set on prompt 1 (bootstrap block); on later prompts kb_offered=1 already skips this.
+KB_OFFER_MSG=""
+if [ "$kb_offered" != "1" ] && [ "$MODE" = "none" ] && [ "$CAND" = "no" ] && [ ! -f "$CWD/.jeeves-no-kb" ]; then
+  KB_OFFER_MSG='Jeeves is installed but this repo has no knowledge base yet (no docs/internal/). ASK the user ONCE, plainly: "This repo has code but no Jeeves knowledge base — want me to set one up? I will scaffold docs/internal/ and populate a SYSTEM-MAP from your codebase (~2 min)." If yes → run the /jeeves:init skill, then populate the KB from the codebase. If the user declines and says do not ask again, create an empty file .jeeves-no-kb at the repo root so Jeeves stops offering. This is a one-time ASK — do not gate, block, or repeat it within this session.'
+  kb_offered=1
+fi
+
 CTX=""
 if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
   if [ "$layer1_injected" != "1" ]; then
@@ -211,6 +224,7 @@ fi
   echo "signup_nudged=$signup_nudged"
   echo "memory_injected=$memory_injected"
   echo "memory_protocol_injected=$memory_protocol_injected"
+  echo "kb_offered=$kb_offered"
 } > "$STATE" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
@@ -222,6 +236,8 @@ FULL_CTX="$CTX"
 # memory READ payload so the "capture as you go" instruction is seen first.
 [ -n "$MEMORY_MSG" ] && FULL_CTX="${MEMORY_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$MEMORY_PROTOCOL_MSG" ] && FULL_CTX="${MEMORY_PROTOCOL_MSG}${FULL_CTX:+ }${FULL_CTX}"
+# The fresh-repo bootstrap ask rides near the front — it's an explicit question TO the user.
+[ -n "$KB_OFFER_MSG" ] && FULL_CTX="${KB_OFFER_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"
 
 if [ -n "$FULL_CTX" ]; then
