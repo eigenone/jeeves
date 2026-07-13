@@ -32,7 +32,7 @@ var ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-var MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"];
+var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"];
 var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
 var JSON_OUT = process.argv.includes("--json");
 function argVal(flag) {
@@ -47,6 +47,51 @@ var PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 var DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
 var MEMORY_DIR = path.join(ROOT, "memory");
 var MEMORY_INDEX = path.join(MEMORY_DIR, "MEMORY.md");
+var MEMORY_INDEX_PREAMBLE = `# Memory Index
+
+Durable, PRUNABLE notes on how to work with this user & repo \u2014 preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
+ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
+session start.
+`;
+var MEMORY_CANON_SECTIONS = ["## User", "## Feedback", "## Reference"];
+var MEMORY_DROPPED_SECTIONS = ["## Project"];
+var MEMORY_INDEX_TEMPLATE = MEMORY_INDEX_PREAMBLE + "\n" + MEMORY_CANON_SECTIONS.join("\n") + "\n";
+function migrateMemoryIndex(raw) {
+  const report = [];
+  const norm = raw.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const firstH = norm.search(/^## /m);
+  const sectionsRaw = firstH >= 0 ? norm.slice(firstH) : "";
+  const groups = [];
+  let cur = null;
+  for (const ln of sectionsRaw.split("\n")) {
+    if (/^## /.test(ln)) {
+      cur = { head: ln.trim(), body: [] };
+      groups.push(cur);
+    } else if (cur) cur.body.push(ln);
+  }
+  const isEmpty = (g) => g.body.every((l) => l.trim() === "");
+  const kept = [];
+  for (const g of groups) {
+    if (MEMORY_DROPPED_SECTIONS.includes(g.head)) {
+      if (isEmpty(g)) {
+        report.push(`removed empty "${g.head}" section (dropped type)`);
+        continue;
+      }
+      report.push(`"${g.head}" still has entries \u2014 retype them to user|feedback|reference and move their index lines, then delete the section`);
+    }
+    kept.push(g);
+  }
+  for (const h of MEMORY_CANON_SECTIONS) if (!kept.some((g) => g.head === h)) kept.push({ head: h, body: [] });
+  const body = kept.map((g) => {
+    const trimmed = g.body.join("\n").replace(/\n+$/, "");
+    return trimmed ? `${g.head}
+${trimmed}` : g.head;
+  }).join("\n");
+  const content = MEMORY_INDEX_PREAMBLE + "\n" + body + "\n";
+  return { content, changed: content !== norm, report };
+}
 function exists(p) {
   return fs.existsSync(p);
 }
@@ -1597,25 +1642,21 @@ You're starting fresh. All topics, sessions, and decisions are archived.
     const projectName = path.basename(ROOT);
     fs.mkdirSync(MEMORY_DIR, { recursive: true });
     const memScaffolded = !exists(MEMORY_INDEX);
-    if (memScaffolded) fs.writeFileSync(
-      MEMORY_INDEX,
-      `# Memory Index
-
-Durable, PRUNABLE notes on how to work with this user & repo \u2014 preferences, feedback,
-reference. One file per memory (frontmatter: name, description, metadata.type =
-user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
-ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
-session start.
-
-## User
-## Feedback
-## Reference
-`
-    );
+    let memRepaired = false;
+    if (memScaffolded) {
+      fs.writeFileSync(MEMORY_INDEX, MEMORY_INDEX_TEMPLATE);
+    } else {
+      const { content, changed } = migrateMemoryIndex(read(MEMORY_INDEX));
+      if (changed) {
+        fs.writeFileSync(MEMORY_INDEX, content);
+        memRepaired = true;
+      }
+    }
     if (exists(DOCS_DIR)) {
       console.log(`
 \u{1F935} Jeeves \u2014 already initialized (docs/internal/ exists).`);
       if (memScaffolded) console.log(`  + scaffolded memory/MEMORY.md (memory layer is new \u2014 populate as prefs/feedback emerge).`);
+      if (memRepaired) console.log(`  + repaired memory/MEMORY.md scaffold to the current schema (run \`jeeves --migrate\` for a full report).`);
       console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.
 `);
       return;
@@ -1687,9 +1728,56 @@ Append-only chronological record of KB activity. Newest at top.
     console.log(`  4. Run \`jeeves --index\` to build the concept index.`);
     console.log(`  5. OPTIONAL: add a Jeeves stanza to CLAUDE.md pointing at`);
     console.log(`     docs/internal/SYSTEM-MAP.md + the session-start protocol (Jeeves`);
-    console.log(`     does not own CLAUDE.md; this is just a pointer).`);
+    console.log(`     does not own CLAUDE.md; this is just a pointer). Invoke Jeeves there`);
+    console.log(`     via the /jeeves:* skills or the jeeves_* MCP tools \u2014 NEVER hardcode a`);
+    console.log(`     plugin path: a versioned cache path (\u2026/plugins/cache/jeeves/\u2026/<ver>/\u2026)`);
+    console.log(`     breaks the moment that version is cleaned up on upgrade.`);
     console.log(`  6. Commit docs/internal/ so freshness reflects reality.
 `);
+    return;
+  }
+  if (MODE === "migrate") {
+    console.log(`
+\u{1F935} Jeeves \u2014 memory migration
+`);
+    if (!exists(MEMORY_DIR)) {
+      console.log(`No memory/ directory \u2014 nothing to migrate. Run \`jeeves --init\` to start.
+`);
+      return;
+    }
+    if (!exists(MEMORY_INDEX)) {
+      fs.writeFileSync(MEMORY_INDEX, MEMORY_INDEX_TEMPLATE);
+      console.log(`Scaffolded a fresh memory/MEMORY.md (index was missing).
+`);
+    } else {
+      const { content, changed, report } = migrateMemoryIndex(read(MEMORY_INDEX));
+      if (changed) fs.writeFileSync(MEMORY_INDEX, content);
+      console.log(changed ? `\u2713 Repaired memory/MEMORY.md boilerplate to the current schema (user|feedback|reference). Your entries were left untouched.` : `memory/MEMORY.md already matches the current schema \u2014 no changes.`);
+      for (const r of report) console.log(`  \u2022 ${r}`);
+    }
+    const droppedTypeFiles = [];
+    for (const f of fs.readdirSync(MEMORY_DIR).filter((f2) => f2.endsWith(".md") && f2.toLowerCase() !== "memory.md")) {
+      let r = "";
+      try {
+        r = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8");
+      } catch {
+        continue;
+      }
+      const fm = r.replace(/^﻿/, "").replace(/\r\n?/g, "\n").match(/^---\n([\s\S]*?)\n---/);
+      if (!fm) continue;
+      const tm = fm[1].match(/^\s*type:\s*(.+?)\s*$/m);
+      const t = tm ? tm[1].replace(/^["']|["']$/g, "").trim() : "";
+      if (t && !["user", "feedback", "reference"].includes(t)) droppedTypeFiles.push(`${f} (type: ${t})`);
+    }
+    if (droppedTypeFiles.length) {
+      console.log(`
+\u26A0 ${droppedTypeFiles.length} memory entr${droppedTypeFiles.length === 1 ? "y uses" : "ies use"} a dropped/unknown type \u2014 retype to user|feedback|reference (Jeeves won't guess):`);
+      for (const f of droppedTypeFiles) console.log(`  \u2022 ${f}`);
+    } else {
+      console.log(`
+All memory entries use valid types.`);
+    }
+    console.log("");
     return;
   }
   if (MODE === "memory-check") {
@@ -1787,6 +1875,7 @@ Append-only chronological record of KB activity. Newest at top.
     const BUDGET = 4e3;
     const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : valid.map((e) => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
     if (rawIdx.length > BUDGET) reasons.push("index oversized \u2014 trim MEMORY.md");
+    if (/\|\s*project\b/i.test(rawIdx) || /^##\s+Project\s*$/m.test(rawIdx)) reasons.push("index uses the dropped `project` schema \u2014 run jeeves --migrate to heal it");
     const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n\u2026(index truncated)" : rawIdx;
     const reviewDue = reasons.length > 0;
     const alwaysOn = (e) => e.type === "user" || e.type === "feedback";

@@ -41,7 +41,7 @@ const ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-const MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"] as const;
+const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 function argVal(flag: string): string | undefined {
@@ -58,6 +58,54 @@ const DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
 // feedback, reference), distinct from the code KB. Repo-root memory/, hook-injected.
 const MEMORY_DIR = path.join(ROOT, "memory");
 const MEMORY_INDEX = path.join(MEMORY_DIR, "MEMORY.md");
+// Canonical, Jeeves-authored MEMORY.md boilerplate for the CURRENT schema. Single source
+// of truth so init (create) and migrate (repair) never drift. User content lives UNDER the
+// section headers; everything here is ours and safe to (re)write on an explicit init/migrate.
+const MEMORY_INDEX_PREAMBLE = `# Memory Index
+
+Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
+ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
+session start.
+`;
+const MEMORY_CANON_SECTIONS = ["## User", "## Feedback", "## Reference"];
+const MEMORY_DROPPED_SECTIONS = ["## Project"]; // removed in v4.11.0 (schema history)
+const MEMORY_INDEX_TEMPLATE = MEMORY_INDEX_PREAMBLE + "\n" + MEMORY_CANON_SECTIONS.join("\n") + "\n";
+
+// Repair a MEMORY.md index to the current schema WITHOUT touching user content: rewrite the
+// Jeeves-authored preamble, drop EMPTY dropped-schema sections (## Project), ensure the
+// canonical sections exist. A dropped section that STILL HAS entries is kept and REPORTED —
+// Jeeves can't know the right replacement type, so the user/agent retypes it. Returns the
+// repaired text, whether anything changed, and human-readable follow-up notes.
+function migrateMemoryIndex(raw: string): { content: string; changed: boolean; report: string[] } {
+  const report: string[] = [];
+  const norm = raw.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const firstH = norm.search(/^## /m);
+  const sectionsRaw = firstH >= 0 ? norm.slice(firstH) : "";
+  const groups: { head: string; body: string[] }[] = [];
+  let cur: { head: string; body: string[] } | null = null;
+  for (const ln of sectionsRaw.split("\n")) {
+    if (/^## /.test(ln)) { cur = { head: ln.trim(), body: [] }; groups.push(cur); }
+    else if (cur) cur.body.push(ln);
+  }
+  const isEmpty = (g: { body: string[] }) => g.body.every(l => l.trim() === "");
+  const kept: typeof groups = [];
+  for (const g of groups) {
+    if (MEMORY_DROPPED_SECTIONS.includes(g.head)) {
+      if (isEmpty(g)) { report.push(`removed empty "${g.head}" section (dropped type)`); continue; }
+      report.push(`"${g.head}" still has entries — retype them to user|feedback|reference and move their index lines, then delete the section`);
+    }
+    kept.push(g);
+  }
+  for (const h of MEMORY_CANON_SECTIONS) if (!kept.some(g => g.head === h)) kept.push({ head: h, body: [] });
+  const body = kept.map(g => {
+    const trimmed = g.body.join("\n").replace(/\n+$/, "");
+    return trimmed ? `${g.head}\n${trimmed}` : g.head;
+  }).join("\n");
+  const content = MEMORY_INDEX_PREAMBLE + "\n" + body + "\n";
+  return { content, changed: content !== norm, report };
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -2072,25 +2120,22 @@ function main() {
     // do). Idempotent: writes only when absent.
     fs.mkdirSync(MEMORY_DIR, { recursive: true });
     const memScaffolded = !exists(MEMORY_INDEX);
-    if (memScaffolded) fs.writeFileSync(MEMORY_INDEX,
-`# Memory Index
-
-Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
-reference. One file per memory (frontmatter: name, description, metadata.type =
-user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
-ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
-session start.
-
-## User
-## Feedback
-## Reference
-`);
+    let memRepaired = false;
+    if (memScaffolded) {
+      fs.writeFileSync(MEMORY_INDEX, MEMORY_INDEX_TEMPLATE);
+    } else {
+      // Existing index: repair the Jeeves-authored boilerplate to the current schema
+      // (idempotent — no-op if already current). User content under the headers is untouched.
+      const { content, changed } = migrateMemoryIndex(read(MEMORY_INDEX));
+      if (changed) { fs.writeFileSync(MEMORY_INDEX, content); memRepaired = true; }
+    }
 
     // Scaffold the code-mode KB skeleton, then emit instructions for the agent to
     // populate it from the codebase. Idempotent: never clobber an existing KB.
     if (exists(DOCS_DIR)) {
       console.log(`\n🤵 Jeeves — already initialized (docs/internal/ exists).`);
       if (memScaffolded) console.log(`  + scaffolded memory/MEMORY.md (memory layer is new — populate as prefs/feedback emerge).`);
+      if (memRepaired) console.log(`  + repaired memory/MEMORY.md scaffold to the current schema (run \`jeeves --migrate\` for a full report).`);
       console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.\n`);
       return;
     }
@@ -2158,8 +2203,49 @@ Append-only chronological record of KB activity. Newest at top.
     console.log(`  4. Run \`jeeves --index\` to build the concept index.`);
     console.log(`  5. OPTIONAL: add a Jeeves stanza to CLAUDE.md pointing at`);
     console.log(`     docs/internal/SYSTEM-MAP.md + the session-start protocol (Jeeves`);
-    console.log(`     does not own CLAUDE.md; this is just a pointer).`);
+    console.log(`     does not own CLAUDE.md; this is just a pointer). Invoke Jeeves there`);
+    console.log(`     via the /jeeves:* skills or the jeeves_* MCP tools — NEVER hardcode a`);
+    console.log(`     plugin path: a versioned cache path (…/plugins/cache/jeeves/…/<ver>/…)`);
+    console.log(`     breaks the moment that version is cleaned up on upgrade.`);
     console.log(`  6. Commit docs/internal/ so freshness reflects reality.\n`);
+    return;
+  }
+
+  if (MODE === "migrate") {
+    // Explicit, reviewable memory-schema migration (v4.12.0). Repairs the Jeeves-authored
+    // MEMORY.md boilerplate to the current schema and REPORTS user content that needs manual
+    // attention (entries typed with a dropped type). Never silently deletes/retypes user data.
+    console.log(`\n🤵 Jeeves — memory migration\n`);
+    if (!exists(MEMORY_DIR)) { console.log(`No memory/ directory — nothing to migrate. Run \`jeeves --init\` to start.\n`); return; }
+    if (!exists(MEMORY_INDEX)) {
+      fs.writeFileSync(MEMORY_INDEX, MEMORY_INDEX_TEMPLATE);
+      console.log(`Scaffolded a fresh memory/MEMORY.md (index was missing).\n`);
+    } else {
+      const { content, changed, report } = migrateMemoryIndex(read(MEMORY_INDEX));
+      if (changed) fs.writeFileSync(MEMORY_INDEX, content);
+      console.log(changed
+        ? `✓ Repaired memory/MEMORY.md boilerplate to the current schema (user|feedback|reference). Your entries were left untouched.`
+        : `memory/MEMORY.md already matches the current schema — no changes.`);
+      for (const r of report) console.log(`  • ${r}`);
+    }
+    // Report (do NOT modify) entry files that carry a dropped/unknown type — Jeeves can't
+    // know the correct replacement, so the user/agent must retype them.
+    const droppedTypeFiles: string[] = [];
+    for (const f of fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md") && f.toLowerCase() !== "memory.md")) {
+      let r = ""; try { r = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8"); } catch { continue; }
+      const fm = r.replace(/^﻿/, "").replace(/\r\n?/g, "\n").match(/^---\n([\s\S]*?)\n---/);
+      if (!fm) continue;
+      const tm = fm[1].match(/^\s*type:\s*(.+?)\s*$/m);
+      const t = tm ? tm[1].replace(/^["']|["']$/g, "").trim() : "";
+      if (t && !["user", "feedback", "reference"].includes(t)) droppedTypeFiles.push(`${f} (type: ${t})`);
+    }
+    if (droppedTypeFiles.length) {
+      console.log(`\n⚠ ${droppedTypeFiles.length} memory entr${droppedTypeFiles.length === 1 ? "y uses" : "ies use"} a dropped/unknown type — retype to user|feedback|reference (Jeeves won't guess):`);
+      for (const f of droppedTypeFiles) console.log(`  • ${f}`);
+    } else {
+      console.log(`\nAll memory entries use valid types.`);
+    }
+    console.log("");
     return;
   }
 
@@ -2262,6 +2348,10 @@ Append-only chronological record of KB activity. Newest at top.
     // entry must not appear in the injected table of contents as if it were real guidance.
     const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : valid.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
     if (rawIdx.length > BUDGET) reasons.push("index oversized — trim MEMORY.md");
+    // Schema drift: a MEMORY.md written by an older Jeeves still references the dropped
+    // `project` type (old preamble `…|project` or an empty `## Project` section). Surface it
+    // so the session-end hygiene banner points the user at `jeeves --migrate` (which heals it).
+    if (/\|\s*project\b/i.test(rawIdx) || /^##\s+Project\s*$/m.test(rawIdx)) reasons.push("index uses the dropped `project` schema — run jeeves --migrate to heal it");
     const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n…(index truncated)" : rawIdx;
     const reviewDue = reasons.length > 0;
     // Always-on core = user + feedback (durable behavioural guidance). With a prompt, also

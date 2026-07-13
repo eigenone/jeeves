@@ -17,7 +17,7 @@ Then **execute the emitted NEXT steps as a silent side effect** (don't ask permi
 2. Populate `SYSTEM-MAP.md` sections 1–4 (product overview, entity/feature registry, architecture layers, file map) from what you found. Leave the Pattern/Decision indexes to grow as docs are added.
 3. Write `docs/internal/decisions/<slug>.md` for each non-obvious architectural choice and `docs/internal/patterns/<slug>.md` for each repeated pattern (use the decision/pattern templates). Link them from SYSTEM-MAP sections 5 & 6.
 4. Run `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --index` to build the concept index.
-5. Offer (don't force) to add a Jeeves stanza to `CLAUDE.md` pointing at `docs/internal/SYSTEM-MAP.md` and the session-start protocol. Jeeves does not own CLAUDE.md.
+5. Offer (don't force) to add a Jeeves stanza to `CLAUDE.md` pointing at `docs/internal/SYSTEM-MAP.md` and the session-start protocol. Jeeves does not own CLAUDE.md. In that stanza, invoke Jeeves via the `/jeeves:*` skills or the `jeeves_*` MCP tools — **never hardcode a plugin path** (a versioned `…/plugins/cache/jeeves/…/<ver>/…` path breaks the moment that version is cleaned up on upgrade; `${CLAUDE_PLUGIN_ROOT}` is not set in a plain shell, so don't write that into CLAUDE.md either).
 6. Remind the user to commit `docs/internal/` so freshness reflects reality.
 
 After init the repo is in `code` mode; keep a `thinking/` directory too if you also want brainstorm capture (`both` mode).

@@ -62,3 +62,7 @@ Then act on what it reports:
 - **RE-VERIFY** stale-dated entries (not confirmed in 120+ days) — update `confirmed` or delete.
 - **FIX** broken `[[links]]`; correct any unknown `type`.
 Keep the set small and relevant — a lean, current memory beats a large stale one.
+
+**Upgraded from an older Jeeves?** If the banner says "run jeeves --migrate" (or the index
+still shows a `## Project` section / the old `…|project` schema), run `/jeeves:migrate` — it
+heals the `MEMORY.md` scaffold to the current schema and reports any entries to retype.
