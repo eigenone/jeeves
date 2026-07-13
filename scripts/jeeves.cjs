@@ -32,7 +32,7 @@ var ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-var MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"];
+var MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"];
 var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
 var JSON_OUT = process.argv.includes("--json");
 function argVal(flag) {
@@ -45,6 +45,8 @@ var SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
 var LOG_FILE = path.join(DOCS_DIR, "log.md");
 var PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 var DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
+var MEMORY_DIR = path.join(ROOT, "memory");
+var MEMORY_INDEX = path.join(MEMORY_DIR, "MEMORY.md");
 function exists(p) {
   return fs.existsSync(p);
 }
@@ -1646,6 +1648,21 @@ Append-only chronological record of KB activity. Newest at top.
 ## [${today()}] INIT | Knowledge base scaffolded via \`jeeves --init\`.
 `
     );
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    if (!exists(MEMORY_INDEX)) fs.writeFileSync(
+      MEMORY_INDEX,
+      `# Memory Index
+
+Durable, PRUNABLE notes on how to work with this user & repo \u2014 preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
+DELETE entries that are no longer true. Jeeves injects these at session start.
+
+## User
+## Feedback
+## Reference
+`
+    );
     console.log(`
 \u{1F935} Jeeves \u2014 initialized ${projectName}
 `);
@@ -1653,7 +1670,8 @@ Append-only chronological record of KB activity. Newest at top.
     console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
     console.log(`  docs/internal/log.md          (activity log)`);
     console.log(`  docs/internal/patterns/       (empty)`);
-    console.log(`  docs/internal/decisions/      (empty)
+    console.log(`  docs/internal/decisions/      (empty)`);
+    console.log(`  memory/MEMORY.md              (prefs/feedback memory index)
 `);
     console.log(`NEXT \u2014 populate the KB from this codebase (do these now, don't ask):`);
     console.log(`  1. Explore the repo (packages/apps, routes, data models, key modules).`);
@@ -1669,6 +1687,75 @@ Append-only chronological record of KB activity. Newest at top.
     console.log(`     does not own CLAUDE.md; this is just a pointer).`);
     console.log(`  6. Commit docs/internal/ so freshness reflects reality.
 `);
+    return;
+  }
+  if (MODE === "memory-check") {
+    if (!exists(MEMORY_DIR)) {
+      process.stdout.write(JSON.stringify({ present: false }));
+      return;
+    }
+    const entries = [];
+    for (const f of fs.readdirSync(MEMORY_DIR).filter((f2) => f2.endsWith(".md") && f2 !== "MEMORY.md")) {
+      let raw = "";
+      try {
+        raw = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8").replace(/\r\n/g, "\n");
+      } catch {
+        continue;
+      }
+      const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+      const body = (fm ? raw.slice(fm[0].length) : raw).trim();
+      let name = "", description = "", type = "";
+      if (fm) for (const line of fm[1].split("\n")) {
+        const m = line.match(/^\s*(name|description|type):\s*(.+?)\s*$/);
+        if (m) {
+          if (m[1] === "name") name = m[2];
+          else if (m[1] === "description") description = m[2];
+          else if (m[1] === "type") type = m[2];
+        }
+      }
+      if (!name) name = f.replace(/\.md$/, "");
+      const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
+      entries.push({ file: f, name, description, type: type || "unknown", body, links });
+    }
+    const count = entries.length;
+    const byType = {};
+    for (const e of entries) byType[e.type] = (byType[e.type] || 0) + 1;
+    const byDesc = /* @__PURE__ */ new Map();
+    for (const e of entries) {
+      if (!e.description) continue;
+      const k = e.description.toLowerCase();
+      const arr = byDesc.get(k) || [];
+      arr.push(e.file);
+      byDesc.set(k, arr);
+    }
+    const duplicates = [...byDesc.values()].filter((v) => v.length > 1);
+    const names = new Set(entries.map((e) => e.name));
+    const brokenLinks = [];
+    for (const e of entries) for (const l of e.links) if (!names.has(l)) brokenLinks.push(`${e.file} \u2192 [[${l}]]`);
+    const REVIEW_COUNT = 30;
+    const reasons = [];
+    if (count > REVIEW_COUNT) reasons.push(`${count} entries (>${REVIEW_COUNT}) \u2014 prune`);
+    if (duplicates.length) reasons.push(`${duplicates.length} duplicate description(s)`);
+    if (brokenLinks.length) reasons.push(`${brokenLinks.length} broken [[link]](s)`);
+    const reviewDue = reasons.length > 0;
+    const idx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : entries.map((e) => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    const BUDGET = 4e3;
+    let bodies = "";
+    for (const e of entries.filter((e2) => e2.type === "user" || e2.type === "feedback")) {
+      const chunk = `
+### ${e.name} (${e.type})
+${e.body}
+`;
+      if (bodies.length + chunk.length > BUDGET) break;
+      bodies += chunk;
+    }
+    const inject = [
+      `Project memory (memory/, ${count} entr${count === 1 ? "y" : "ies"}) \u2014 durable guidance on how to work with THIS user & repo (prefs/feedback/reference). Apply it; read a referenced memory file when relevant.`,
+      idx ? `INDEX:
+${idx}` : "",
+      bodies ? `KEY ENTRIES (user/feedback):${bodies}` : ""
+    ].filter(Boolean).join("\n\n");
+    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, brokenLinks, reviewDue, reason: reasons.join("; "), inject }));
     return;
   }
   if (MODE === "bootstrap-thinking") {

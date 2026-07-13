@@ -42,7 +42,7 @@ fi
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0
 # Sourcing the state file evaluates it as shell. Defense in depth: (1) values are
 # sanitized to safe character classes BEFORE they are ever written (see below), so
 # nothing shell-active can enter the file; (2) after loading we coerce every counter
@@ -50,7 +50,7 @@ last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned
 # bypass the block ceiling. STATE is keyed on a sanitized session id under /tmp
 # (sticky bit, same-UID). Not for multi-tenant; fine for single-user dev.
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
-for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged; do
+for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected; do
   eval "_cur=\${$_v}"
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
 done
@@ -133,6 +133,24 @@ if [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
   signup_nudged=1
 fi
 
+# --- Memory layer (once per session, mode-INDEPENDENT) ---
+# Inject the typed memory/ layer (prefs/feedback/reference) so the agent applies durable
+# "how to work with this user & repo" guidance from the start. Auto-hygiene: if
+# --memory-check flags red conditions (dupes / broken links / over-count), append a
+# prune instruction. Cheap dir guard avoids spawning jeeves when there's no memory/.
+MEMORY_MSG=""
+if [ "$memory_injected" != "1" ] && [ -d "$CWD/memory" ]; then
+  MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
+  memory_injected=1
+  if [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
+    MEMORY_MSG=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
+    if [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
+      MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
+      MEMORY_MSG="${MEMORY_MSG} MEMORY HYGIENE (${MREASON}): review memory/ and prune — delete entries no longer true, merge overlapping ones, fix broken [[links]]. Memory is ephemeral; wipe what's stale."
+    fi
+  fi
+fi
+
 CTX=""
 if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
   if [ "$layer1_injected" != "1" ]; then
@@ -166,12 +184,16 @@ fi
   echo "last_commit_prompt=$last_commit_prompt"
   echo "version_warned=$version_warned"
   echo "signup_nudged=$signup_nudged"
+  echo "memory_injected=$memory_injected"
 } > "$STATE" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
 # own even in code-mode projects (where CTX is empty).
 FULL_CTX="$CTX"
 [ -n "$REGISTRATION_MSG" ] && FULL_CTX="${REGISTRATION_MSG}${CTX:+ }${CTX}"
+# Memory rides ahead of thinking-mode context (durable behavioral guidance applies to
+# every mode), but behind the version warning.
+[ -n "$MEMORY_MSG" ] && FULL_CTX="${MEMORY_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"
 
 if [ -n "$FULL_CTX" ]; then

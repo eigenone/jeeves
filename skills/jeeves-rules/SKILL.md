@@ -70,6 +70,12 @@ Before pushing: run the doc linter — `npx tsx scripts/lint-docs.ts` if the pro
 | "annotate" or "add comments" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --annotate` — finds under-commented complex code, tells you where to add WHY comments |
 | "verify comments" | `npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --verify` — finds comments that make claims, tells you to check them against actual code |
 
+## Memory (how to work with this user & repo)
+`memory/` (repo root) is the COLLABORATION layer — durable preferences, feedback, working style, reference facts — distinct from the code KB. Jeeves injects it at session start automatically.
+- When the user states a lasting preference/correction/style, or a stable setup fact → write `memory/<type>_<slug>.md` (type = user|feedback|reference|project) + index it in `memory/MEMORY.md`. Use `/jeeves:memory`.
+- Memory is EPHEMERAL: overwrite or DELETE entries that stop being true (don't supersede-with-history like the KB). When the session hook flags "MEMORY HYGIENE", prune — delete stale, merge overlapping, fix broken `[[links]]`.
+- Do NOT put code knowledge here — that belongs in `docs/internal/decisions|patterns`.
+
 ## Update Before Create
 Before creating a new doc, check if an existing doc covers the topic. UPDATE existing docs.
 

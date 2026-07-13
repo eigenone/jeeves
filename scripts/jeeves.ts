@@ -41,7 +41,7 @@ const ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-const MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check"] as const;
+const MODES = ["init", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 function argVal(flag: string): string | undefined {
@@ -54,6 +54,10 @@ const SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
 const LOG_FILE = path.join(DOCS_DIR, "log.md");
 const PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 const DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
+// Memory layer — the "how to work with THIS user/repo" collaboration layer (prefs,
+// feedback, reference), distinct from the code KB. Repo-root memory/, hook-injected.
+const MEMORY_DIR = path.join(ROOT, "memory");
+const MEMORY_INDEX = path.join(MEMORY_DIR, "MEMORY.md");
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -2113,12 +2117,28 @@ Append-only chronological record of KB activity. Newest at top.
 ## Entries
 ## [${today()}] INIT | Knowledge base scaffolded via \`jeeves --init\`.
 `);
+    // Memory layer (collaboration, not code) — scaffold the index; entries are added
+    // as prefs/feedback emerge. Injected at session start by the hook.
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    if (!exists(MEMORY_INDEX)) fs.writeFileSync(MEMORY_INDEX,
+`# Memory Index
+
+Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
+DELETE entries that are no longer true. Jeeves injects these at session start.
+
+## User
+## Feedback
+## Reference
+`);
     console.log(`\n🤵 Jeeves — initialized ${projectName}\n`);
     console.log(`Scaffolded:`);
     console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
     console.log(`  docs/internal/log.md          (activity log)`);
     console.log(`  docs/internal/patterns/       (empty)`);
-    console.log(`  docs/internal/decisions/      (empty)\n`);
+    console.log(`  docs/internal/decisions/      (empty)`);
+    console.log(`  memory/MEMORY.md              (prefs/feedback memory index)\n`);
     console.log(`NEXT — populate the KB from this codebase (do these now, don't ask):`);
     console.log(`  1. Explore the repo (packages/apps, routes, data models, key modules).`);
     console.log(`  2. Fill SYSTEM-MAP.md sections 1-7: product overview, entity/feature`);
@@ -2132,6 +2152,69 @@ Append-only chronological record of KB activity. Newest at top.
     console.log(`     docs/internal/SYSTEM-MAP.md + the session-start protocol (Jeeves`);
     console.log(`     does not own CLAUDE.md; this is just a pointer).`);
     console.log(`  6. Commit docs/internal/ so freshness reflects reality.\n`);
+    return;
+  }
+
+  if (MODE === "memory-check") {
+    // Read the typed memory/ layer, report hygiene signals, and build the context the
+    // session hook injects. Deterministic only — the SEMANTIC prune (stale/contradicted)
+    // is the agent's job, triggered when reviewDue flags a red condition.
+    if (!exists(MEMORY_DIR)) { process.stdout.write(JSON.stringify({ present: false })); return; }
+    interface Mem { file: string; name: string; description: string; type: string; body: string; links: string[]; }
+    const entries: Mem[] = [];
+    for (const f of fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md") && f !== "MEMORY.md")) {
+      let raw = "";
+      try { raw = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8").replace(/\r\n/g, "\n"); } catch { continue; }
+      const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+      const body = (fm ? raw.slice(fm[0].length) : raw).trim();
+      let name = "", description = "", type = "";
+      if (fm) for (const line of fm[1].split("\n")) {
+        const m = line.match(/^\s*(name|description|type):\s*(.+?)\s*$/);
+        if (m) { if (m[1] === "name") name = m[2]; else if (m[1] === "description") description = m[2]; else if (m[1] === "type") type = m[2]; }
+      }
+      if (!name) name = f.replace(/\.md$/, "");
+      const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+      entries.push({ file: f, name, description, type: type || "unknown", body, links });
+    }
+    const count = entries.length;
+    const byType: Record<string, number> = {};
+    for (const e of entries) byType[e.type] = (byType[e.type] || 0) + 1;
+    // Duplicate descriptions (a hygiene smell — likely overlapping memories).
+    const byDesc = new Map<string, string[]>();
+    for (const e of entries) {
+      if (!e.description) continue;
+      const k = e.description.toLowerCase();
+      const arr = byDesc.get(k) || [];
+      arr.push(e.file); byDesc.set(k, arr);
+    }
+    const duplicates = [...byDesc.values()].filter(v => v.length > 1);
+    // Broken [[links]] — reference to a memory name that no longer exists.
+    const names = new Set(entries.map(e => e.name));
+    const brokenLinks: string[] = [];
+    for (const e of entries) for (const l of e.links) if (!names.has(l)) brokenLinks.push(`${e.file} → [[${l}]]`);
+    const REVIEW_COUNT = 30;
+    const reasons: string[] = [];
+    if (count > REVIEW_COUNT) reasons.push(`${count} entries (>${REVIEW_COUNT}) — prune`);
+    if (duplicates.length) reasons.push(`${duplicates.length} duplicate description(s)`);
+    if (brokenLinks.length) reasons.push(`${brokenLinks.length} broken [[link]](s)`);
+    const reviewDue = reasons.length > 0;
+    // Injection: the index (compact) + user/feedback bodies up to a budget.
+    const idx = exists(MEMORY_INDEX)
+      ? read(MEMORY_INDEX).trim()
+      : entries.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    const BUDGET = 4000;
+    let bodies = "";
+    for (const e of entries.filter(e => e.type === "user" || e.type === "feedback")) {
+      const chunk = `\n### ${e.name} (${e.type})\n${e.body}\n`;
+      if (bodies.length + chunk.length > BUDGET) break;
+      bodies += chunk;
+    }
+    const inject = [
+      `Project memory (memory/, ${count} entr${count === 1 ? "y" : "ies"}) — durable guidance on how to work with THIS user & repo (prefs/feedback/reference). Apply it; read a referenced memory file when relevant.`,
+      idx ? `INDEX:\n${idx}` : "",
+      bodies ? `KEY ENTRIES (user/feedback):${bodies}` : "",
+    ].filter(Boolean).join("\n\n");
+    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, brokenLinks, reviewDue, reason: reasons.join("; "), inject }));
     return;
   }
 
