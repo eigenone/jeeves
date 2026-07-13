@@ -1603,13 +1603,13 @@ You're starting fresh. All topics, sessions, and decisions are archived.
 
 Durable, PRUNABLE notes on how to work with this user & repo \u2014 preferences, feedback,
 reference. One file per memory (frontmatter: name, description, metadata.type =
-user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
-DELETE entries that are no longer true. Jeeves injects these at session start.
+user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
+ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
+session start.
 
 ## User
 ## Feedback
 ## Reference
-## Project
 `
     );
     if (exists(DOCS_DIR)) {
@@ -1693,7 +1693,7 @@ Append-only chronological record of KB activity. Newest at top.
     return;
   }
   if (MODE === "memory-check") {
-    const KNOWN_TYPES = /* @__PURE__ */ new Set(["user", "feedback", "reference", "project"]);
+    const KNOWN_TYPES = /* @__PURE__ */ new Set(["user", "feedback", "reference"]);
     if (!exists(MEMORY_DIR)) {
       process.stdout.write(JSON.stringify({ present: false }));
       return;
@@ -1710,19 +1710,21 @@ Append-only chronological record of KB activity. Newest at top.
       raw = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
       const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
       const body = (fm ? raw.slice(fm[0].length) : raw).trim();
-      let name = "", description = "", type = "";
+      let name = "", description = "", type = "", created = "", confirmed = "";
       if (fm) for (const line of fm[1].split("\n")) {
-        const m = line.match(/^\s*(name|description|type):\s*(.+?)\s*$/);
+        const m = line.match(/^\s*(name|description|type|created|confirmed):\s*(.+?)\s*$/);
         if (m) {
           const v = stripQuotes(m[2]);
           if (m[1] === "name") name = v;
           else if (m[1] === "description") description = v;
           else if (m[1] === "type") type = v;
+          else if (m[1] === "created") created = v;
+          else if (m[1] === "confirmed") confirmed = v;
         }
       }
       if (!name) name = f.replace(/\.md$/, "");
       const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1].split("|")[0].trim());
-      entries.push({ file: f, name, description, type: type || "unknown", body, links });
+      entries.push({ file: f, name, description, type: type || "unknown", body, links, created, confirmed });
     }
     const count = entries.length;
     const byType = {};
@@ -1740,30 +1742,65 @@ Append-only chronological record of KB activity. Newest at top.
     }
     const duplicates = [...byDesc.values()].filter((v) => v.length > 1);
     const dupNames = [...byName.values()].filter((v) => v.length > 1);
+    const wordSet = (s) => new Set(s.toLowerCase().match(/[a-z0-9]{3,}/g) || []);
+    const jaccard = (a, b) => {
+      if (!a.size || !b.size) return 0;
+      let inter = 0;
+      for (const w of a) if (b.has(w)) inter++;
+      return inter / (a.size + b.size - inter);
+    };
+    const nearDupes = [];
+    const withDesc = entries.filter((e) => e.description);
+    for (let i = 0; i < withDesc.length; i++) for (let j = i + 1; j < withDesc.length; j++) {
+      const a = withDesc[i], b = withDesc[j];
+      if (a.description.toLowerCase() === b.description.toLowerCase()) continue;
+      if (jaccard(wordSet(a.description), wordSet(b.description)) >= 0.6) nearDupes.push(`${a.file} \u2248 ${b.file}`);
+    }
     const names = new Set(entries.map((e) => e.name.toLowerCase()));
     const brokenLinks = [];
     for (const e of entries) for (const l of e.links) if (!names.has(l.toLowerCase())) brokenLinks.push(`${e.file} \u2192 [[${l}]]`);
     const unknownTypeFiles = entries.filter((e) => !KNOWN_TYPES.has(e.type)).map((e) => e.file);
+    const REVIEW_AGE_DAYS = 120;
+    const nowMs = Date.now();
+    const staleAge = [];
+    for (const e of entries) {
+      const d = Date.parse(e.confirmed || e.created || "");
+      if (!isNaN(d) && (nowMs - d) / 864e5 > REVIEW_AGE_DAYS) staleAge.push(e.file);
+    }
     const REVIEW_COUNT = 30;
     const reasons = [];
     if (count > REVIEW_COUNT) reasons.push(`${count} entries (>${REVIEW_COUNT}) \u2014 prune`);
     if (duplicates.length) reasons.push(`${duplicates.length} duplicate description(s)`);
+    if (nearDupes.length) reasons.push(`${nearDupes.length} near-duplicate pair(s) \u2014 merge`);
     if (dupNames.length) reasons.push(`${dupNames.length} duplicate name(s)`);
     if (brokenLinks.length) reasons.push(`${brokenLinks.length} broken [[link]](s)`);
-    if (unknownTypeFiles.length) reasons.push(`${unknownTypeFiles.length} entr${unknownTypeFiles.length === 1 ? "y" : "ies"} with unknown type (use user|feedback|reference|project)`);
+    if (staleAge.length) reasons.push(`${staleAge.length} entr${staleAge.length === 1 ? "y" : "ies"} not confirmed in ${REVIEW_AGE_DAYS}+ days \u2014 re-verify or delete`);
+    if (unknownTypeFiles.length) reasons.push(`${unknownTypeFiles.length} entr${unknownTypeFiles.length === 1 ? "y" : "ies"} with unknown type (use user|feedback|reference)`);
     const valid = entries.filter((e) => KNOWN_TYPES.has(e.type));
     if (valid.length === 0) {
       process.stdout.write(JSON.stringify({ present: false, count }));
       return;
     }
+    const promptArg = argVal("--prompt") || "";
+    const promptWords = wordSet(promptArg);
+    const relevance = (e) => promptWords.size ? jaccard(promptWords, wordSet(`${e.name} ${e.description} ${e.body.slice(0, 300)}`)) : 0;
     const BUDGET = 4e3;
-    const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : entries.map((e) => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : valid.map((e) => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
     if (rawIdx.length > BUDGET) reasons.push("index oversized \u2014 trim MEMORY.md");
     const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n\u2026(index truncated)" : rawIdx;
     const reviewDue = reasons.length > 0;
+    const alwaysOn = (e) => e.type === "user" || e.type === "feedback";
+    const injectable = valid.filter((e) => alwaysOn(e) || promptWords.size && relevance(e) > 0);
+    injectable.sort((a, b) => {
+      const r = relevance(b) - relevance(a);
+      if (r) return r;
+      const ta = alwaysOn(a) ? 0 : 1, tb = alwaysOn(b) ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      return a.name.localeCompare(b.name);
+    });
     let bodies = "";
     const bodyBudget = Math.max(0, BUDGET - idx.length);
-    for (const e of valid.filter((e2) => e2.type === "user" || e2.type === "feedback")) {
+    for (const e of injectable) {
       const chunk = `
 ### ${e.name} (${e.type})
 ${e.body}
@@ -1775,9 +1812,9 @@ ${e.body}
       `Project memory (memory/, ${count} entr${count === 1 ? "y" : "ies"}) \u2014 durable guidance on how to work with THIS user & repo (prefs/feedback/reference). Apply it; read a referenced memory file when relevant.`,
       idx ? `INDEX:
 ${idx}` : "",
-      bodies ? `KEY ENTRIES (user/feedback):${bodies}` : ""
+      bodies ? `KEY ENTRIES:${bodies}` : ""
     ].filter(Boolean).join("\n\n");
-    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, brokenLinks, unknownTypeFiles, reviewDue, reason: reasons.join("; "), inject }));
+    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, nearDupes, brokenLinks, unknownTypeFiles, staleAge, reviewDue, reason: reasons.join("; "), inject }));
     return;
   }
   if (MODE === "bootstrap-thinking") {

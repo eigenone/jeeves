@@ -72,8 +72,8 @@ Before pushing: run the doc linter — `npx tsx scripts/lint-docs.ts` if the pro
 
 ## Memory (how to work with this user & repo)
 `memory/` (repo root) is the COLLABORATION layer — durable preferences, feedback, working style, reference facts — distinct from the code KB. Jeeves injects it at session start automatically.
-- When the user states a lasting preference/correction/style, or a stable setup fact → write `memory/<type>_<slug>.md` (type = user|feedback|reference|project) + index it in `memory/MEMORY.md`. Use `/jeeves:memory`.
-- Memory is EPHEMERAL: overwrite or DELETE entries that stop being true (don't supersede-with-history like the KB). When the session hook flags "MEMORY HYGIENE", prune — delete stale, merge overlapping, fix broken `[[links]]`.
+- When the user states a lasting preference/correction/style, or a stable setup fact → write `memory/<type>_<slug>.md` (type = user|feedback|reference; optional created/confirmed dates) + index it in `memory/MEMORY.md`. Capture SILENTLY as it surfaces (the session hook injects this instruction). Use `/jeeves:memory`.
+- Memory is EPHEMERAL: overwrite or DELETE entries that stop being true (don't supersede-with-history like the KB). When the Stop hook flags "memory hygiene" at session end, prune — delete stale, merge overlapping/near-duplicate, re-verify stale-dated, fix broken `[[links]]`.
 - Do NOT put code knowledge here — that belongs in `docs/internal/decisions|patterns`.
 
 ## Update Before Create

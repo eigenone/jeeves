@@ -2077,13 +2077,13 @@ function main() {
 
 Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
 reference. One file per memory (frontmatter: name, description, metadata.type =
-user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
-DELETE entries that are no longer true. Jeeves injects these at session start.
+user|feedback|reference; optional created/confirmed dates). Unlike the code KB, memory is
+ephemeral: overwrite or DELETE entries that are no longer true. Jeeves injects these at
+session start.
 
 ## User
 ## Feedback
 ## Reference
-## Project
 `);
 
     // Scaffold the code-mode KB skeleton, then emit instructions for the agent to
@@ -2167,9 +2167,12 @@ Append-only chronological record of KB activity. Newest at top.
     // Read the typed memory/ layer, report hygiene signals, and build the context the
     // session hook injects. Deterministic only — the SEMANTIC prune (stale/contradicted)
     // is the agent's job, triggered when reviewDue flags a red condition.
-    const KNOWN_TYPES = new Set(["user", "feedback", "reference", "project"]);
+    // Types: user (who they are) | feedback (how to work) | reference (stable external/
+    // setup facts). `project` was dropped in v4.11.0 — it never injected and blurred the
+    // memory-vs-code-KB boundary (project goals/constraints live in docs/internal).
+    const KNOWN_TYPES = new Set(["user", "feedback", "reference"]);
     if (!exists(MEMORY_DIR)) { process.stdout.write(JSON.stringify({ present: false })); return; }
-    interface Mem { file: string; name: string; description: string; type: string; body: string; links: string[]; }
+    interface Mem { file: string; name: string; description: string; type: string; body: string; links: string[]; created: string; confirmed: string; }
     const entries: Mem[] = [];
     const stripQuotes = (v: string) => (/^".*"$/.test(v) || /^'.*'$/.test(v)) ? v.slice(1, -1) : v;
     // .sort() for deterministic order (readdir order is FS-dependent → nondeterministic
@@ -2180,15 +2183,17 @@ Append-only chronological record of KB activity. Newest at top.
       raw = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n"); // strip BOM; normalize CRLF AND lone CR
       const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
       const body = (fm ? raw.slice(fm[0].length) : raw).trim();
-      let name = "", description = "", type = "";
+      let name = "", description = "", type = "", created = "", confirmed = "";
       if (fm) for (const line of fm[1].split("\n")) {
-        const m = line.match(/^\s*(name|description|type):\s*(.+?)\s*$/);
-        if (m) { const v = stripQuotes(m[2]); if (m[1] === "name") name = v; else if (m[1] === "description") description = v; else if (m[1] === "type") type = v; }
+        const m = line.match(/^\s*(name|description|type|created|confirmed):\s*(.+?)\s*$/);
+        if (m) { const v = stripQuotes(m[2]);
+          if (m[1] === "name") name = v; else if (m[1] === "description") description = v;
+          else if (m[1] === "type") type = v; else if (m[1] === "created") created = v; else if (m[1] === "confirmed") confirmed = v; }
       }
       if (!name) name = f.replace(/\.md$/, "");
       // [[name]] / [[name|alias]] — resolve on the pre-pipe name.
       const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].split("|")[0].trim());
-      entries.push({ file: f, name, description, type: type || "unknown", body, links });
+      entries.push({ file: f, name, description, type: type || "unknown", body, links, created, confirmed });
     }
     const count = entries.length;
     const byType: Record<string, number> = {};
@@ -2199,34 +2204,79 @@ Append-only chronological record of KB activity. Newest at top.
     for (const e of entries) { if (e.description) pushKey(byDesc, e.description.toLowerCase(), e.file); pushKey(byName, e.name.toLowerCase(), e.file); }
     const duplicates = [...byDesc.values()].filter(v => v.length > 1);
     const dupNames = [...byName.values()].filter(v => v.length > 1);
+    // Near-duplicates (v4.11.0): distinct descriptions whose word-sets overlap heavily
+    // (Jaccard ≥ 0.6) — the "two entries saying almost the same thing" smell that exact-
+    // match dup detection misses. Tokenize to words ≥3 chars; skip exact matches (already
+    // caught above). O(n²) but bounded by the review-count guard in practice.
+    const wordSet = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g) || []));
+    const jaccard = (a: Set<string>, b: Set<string>) => { if (!a.size || !b.size) return 0; let inter = 0; for (const w of a) if (b.has(w)) inter++; return inter / (a.size + b.size - inter); };
+    const nearDupes: string[] = [];
+    const withDesc = entries.filter(e => e.description);
+    for (let i = 0; i < withDesc.length; i++) for (let j = i + 1; j < withDesc.length; j++) {
+      const a = withDesc[i], b = withDesc[j];
+      if (a.description.toLowerCase() === b.description.toLowerCase()) continue; // exact → duplicates[]
+      if (jaccard(wordSet(a.description), wordSet(b.description)) >= 0.6) nearDupes.push(`${a.file} ≈ ${b.file}`);
+    }
     // Broken [[links]] — case-insensitive resolution against known names.
     const names = new Set(entries.map(e => e.name.toLowerCase()));
     const brokenLinks: string[] = [];
     for (const e of entries) for (const l of e.links) if (!names.has(l.toLowerCase())) brokenLinks.push(`${e.file} → [[${l}]]`);
     // Typo'd / missing type → the entry is silently excluded from injection; flag it.
     const unknownTypeFiles = entries.filter(e => !KNOWN_TYPES.has(e.type)).map(e => e.file);
+    // Age staleness (v4.11.0): an entry whose last-confirmed (or created) date is older
+    // than REVIEW_AGE_DAYS should be re-verified or deleted — memory is ephemeral, and a
+    // stale "preference" may no longer hold. Only entries carrying a parseable date are
+    // aged; undated legacy entries are exempt (no false staleness on pre-dates memory).
+    const REVIEW_AGE_DAYS = 120;
+    const nowMs = Date.now();
+    const staleAge: string[] = [];
+    for (const e of entries) {
+      const d = Date.parse(e.confirmed || e.created || "");
+      if (!isNaN(d) && (nowMs - d) / 86400000 > REVIEW_AGE_DAYS) staleAge.push(e.file);
+    }
     const REVIEW_COUNT = 30;
     const reasons: string[] = [];
     if (count > REVIEW_COUNT) reasons.push(`${count} entries (>${REVIEW_COUNT}) — prune`);
     if (duplicates.length) reasons.push(`${duplicates.length} duplicate description(s)`);
+    if (nearDupes.length) reasons.push(`${nearDupes.length} near-duplicate pair(s) — merge`);
     if (dupNames.length) reasons.push(`${dupNames.length} duplicate name(s)`);
     if (brokenLinks.length) reasons.push(`${brokenLinks.length} broken [[link]](s)`);
-    if (unknownTypeFiles.length) reasons.push(`${unknownTypeFiles.length} entr${unknownTypeFiles.length === 1 ? "y" : "ies"} with unknown type (use user|feedback|reference|project)`);
+    if (staleAge.length) reasons.push(`${staleAge.length} entr${staleAge.length === 1 ? "y" : "ies"} not confirmed in ${REVIEW_AGE_DAYS}+ days — re-verify or delete`);
+    if (unknownTypeFiles.length) reasons.push(`${unknownTypeFiles.length} entr${unknownTypeFiles.length === 1 ? "y" : "ies"} with unknown type (use user|feedback|reference)`);
     // Provenance: only a Jeeves memory store if ≥1 entry has a recognized type. Stops an
     // unrelated memory/ dir (ML checkpoints, agent frameworks) from injecting arbitrary
     // markdown as authoritative guidance (prompt-injection surface).
     const valid = entries.filter(e => KNOWN_TYPES.has(e.type));
     if (valid.length === 0) { process.stdout.write(JSON.stringify({ present: false, count })); return; }
-    // Injection is WHOLE-payload budgeted: index first (capped), user/feedback bodies in
-    // the remaining room, SKIPPING (not breaking on) an oversized entry.
+    // Prompt-scored relevance (v4.11.0, D3): when the session hook passes the user's
+    // current prompt, rank entries by word-overlap against it so the MOST relevant bodies
+    // inject first — and a reference entry surfaces when the prompt touches it, not only
+    // user/feedback. No prompt → deterministic type-then-name order (unchanged behaviour).
+    const promptArg = argVal("--prompt") || "";
+    const promptWords = wordSet(promptArg);
+    const relevance = (e: Mem) => promptWords.size ? jaccard(promptWords, wordSet(`${e.name} ${e.description} ${e.body.slice(0, 300)}`)) : 0;
+    // Injection is WHOLE-payload budgeted: index first (capped), then bodies in the
+    // remaining room, SKIPPING (not breaking on) an oversized entry.
     const BUDGET = 4000;
-    const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : entries.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    // Auto-index fallback (no MEMORY.md) lists only VALID entries — an unknown/dropped-type
+    // entry must not appear in the injected table of contents as if it were real guidance.
+    const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : valid.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
     if (rawIdx.length > BUDGET) reasons.push("index oversized — trim MEMORY.md");
     const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n…(index truncated)" : rawIdx;
     const reviewDue = reasons.length > 0;
+    // Always-on core = user + feedback (durable behavioural guidance). With a prompt, also
+    // fold in any reference entry that scores against it. Order: relevance desc (when a
+    // prompt is present), then type (user/feedback before reference), then name.
+    const alwaysOn = (e: Mem) => e.type === "user" || e.type === "feedback";
+    const injectable = valid.filter(e => alwaysOn(e) || (promptWords.size && relevance(e) > 0));
+    injectable.sort((a, b) => {
+      const r = relevance(b) - relevance(a); if (r) return r;
+      const ta = alwaysOn(a) ? 0 : 1, tb = alwaysOn(b) ? 0 : 1; if (ta !== tb) return ta - tb;
+      return a.name.localeCompare(b.name);
+    });
     let bodies = "";
     const bodyBudget = Math.max(0, BUDGET - idx.length);
-    for (const e of valid.filter(e => e.type === "user" || e.type === "feedback")) {
+    for (const e of injectable) {
       const chunk = `\n### ${e.name} (${e.type})\n${e.body}\n`;
       if (bodies.length + chunk.length > bodyBudget) continue; // skip oversized, keep packing smaller ones
       bodies += chunk;
@@ -2234,9 +2284,9 @@ Append-only chronological record of KB activity. Newest at top.
     const inject = [
       `Project memory (memory/, ${count} entr${count === 1 ? "y" : "ies"}) — durable guidance on how to work with THIS user & repo (prefs/feedback/reference). Apply it; read a referenced memory file when relevant.`,
       idx ? `INDEX:\n${idx}` : "",
-      bodies ? `KEY ENTRIES (user/feedback):${bodies}` : "",
+      bodies ? `KEY ENTRIES:${bodies}` : "",
     ].filter(Boolean).join("\n\n");
-    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, brokenLinks, unknownTypeFiles, reviewDue, reason: reasons.join("; "), inject }));
+    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, nearDupes, brokenLinks, unknownTypeFiles, staleAge, reviewDue, reason: reasons.join("; "), inject }));
     return;
   }
 

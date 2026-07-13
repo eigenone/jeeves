@@ -1,8 +1,19 @@
 #!/bin/bash
-# Jeeves thinking-capture-gate — Stop hook. Layer 3 salvage block.
+# Jeeves thinking-capture-gate — Stop hook. Layer 3 thinking salvage block +
+# session-END memory hygiene banner (v4.11.0).
 # Fail-open invariant: ANY error/parse failure -> allow the stop (echo '{}').
 INPUT=$(cat 2>/dev/null)
-allow() { echo '{}'; exit 0; }
+# SYSMSG, when set, rides out on the (non-blocking) allow path as a top-level
+# systemMessage — a user-facing banner, independent of decision. Used for the
+# end-of-session memory-hygiene nudge. Empty -> plain '{}'.
+SYSMSG=""
+allow() {
+  if [ -n "$SYSMSG" ]; then
+    OUT=$(printf '%s' "$SYSMSG" | jq -Rsc '{systemMessage:.}' 2>/dev/null)
+    [ -n "$OUT" ] && { printf '%s\n' "$OUT"; exit 0; }
+  fi
+  echo '{}'; exit 0
+}
 
 BLOCK_DEBOUNCE=4
 BLOCK_CEILING=3
@@ -43,6 +54,24 @@ for _v in prompts last_block_turn block_count last_commit_prompt; do
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
 done
 turn=$prompts
+
+# --- Session-END memory hygiene (v4.11.0, D2) ---
+# The Stop hook is the closest thing to "session end" that can surface anything. When the
+# memory/ store has drifted (stale-dated / near-dup / broken links / oversized), emit a
+# user-facing systemMessage banner so the prune ask lands when work is winding down, NOT on
+# the opening prompt (session-check deliberately does not carry hygiene). At most once per
+# session via a sentinel file (independent of session-check's state, which it overwrites
+# every prompt). Non-blocking: the banner rides the allow path; capture is opportunistic and
+# an empty/tidy memory is the common, correct case — this never blocks the stop.
+MEMHYG_MARK="${STATE}-memhyg"
+if [ -d "$CWD/memory" ] && [ ! -f "$MEMHYG_MARK" ]; then
+  touch "$MEMHYG_MARK" 2>/dev/null || true
+  MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
+  if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
+    MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
+    SYSMSG="Jeeves memory hygiene (${MREASON}): memory/ could use a prune — delete entries no longer true, merge overlapping/near-duplicate ones, re-verify stale-dated ones, fix broken [[links]]. Run /jeeves:memory or just ask. Memory is ephemeral."
+  fi
+fi
 
 # Use the per-session baseline + last-commit index recorded by session-check
 # (Layer 1/2). The gate never observes commits itself (session-check runs every

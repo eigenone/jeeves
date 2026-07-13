@@ -20,6 +20,11 @@ STATE="/tmp/jeeves-${SAFE_ID}"
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
 
+# The user's current prompt (UserPromptSubmit stdin carries it). Used to prompt-score
+# memory relevance. Flatten whitespace and cap length — it is passed as an argv value to
+# the engine, so keep it single-line and bounded (a huge prompt would bloat the spawn).
+PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null | tr '\n\r\t' '   ' | head -c 500)
+
 # Resolve the engine into the JEEVES array. Two orthogonal preferences:
 #  1. PREFER the plugin copy over a project-local one — a plugin update can't refresh
 #     a copy committed into the repo, and a stale local copy runs old (pre-4.6:
@@ -42,7 +47,7 @@ fi
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0
 # Sourcing the state file evaluates it as shell. Defense in depth: (1) values are
 # sanitized to safe character classes BEFORE they are ever written (see below), so
 # nothing shell-active can enter the file; (2) after loading we coerce every counter
@@ -50,7 +55,7 @@ last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned
 # bypass the block ceiling. STATE is keyed on a sanitized session id under /tmp
 # (sticky bit, same-UID). Not for multi-tenant; fine for single-user dev.
 if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
-for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected; do
+for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected; do
   eval "_cur=\${$_v}"
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
 done
@@ -99,6 +104,12 @@ fi
 
 PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
 
+# Memory capture protocol (D1) — mirrors thinking-mode Layer 1 (silent side-effect), but
+# capture is OPPORTUNISTIC: memory-worthy events are rare, so there is NO empty-memory gate
+# (most sessions legitimately add nothing). This is the write path — without it memory/ is
+# read-only and never grows (the finance-style capture failure, applied to memory).
+MEMORY_PROTOCOL='Jeeves memory is active. When the user reveals something DURABLE about how to work with THEM or THIS repo — a stated preference, a correction of your approach, how they want answers/output, or a stable setup/reference fact — capture it SILENTLY (do not narrate, do not ask permission): write memory/<type>_<slug>.md with frontmatter name, description, metadata.type = user|feedback|reference, and created + confirmed dates (today), then add a one-line pointer under the matching section of memory/MEMORY.md. Capture is OPPORTUNISTIC — only cross-session facts about the user/repo, NOT this task code details (those belong in the code KB). Before adding, check MEMORY.md for an existing entry to UPDATE (bump its confirmed date) instead of duplicating. Under-capturing durable prefs is the failure mode; a correction the user repeats twice is a memory.'
+
 CC=$("${JEEVES[@]}" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
 # Sanitize to hex before it can be persisted + later sourced as shell (the value is
 # a git SHA; strip anything else so a malformed/hostile value can't inject).
@@ -134,27 +145,35 @@ if [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
 fi
 
 # --- Memory layer (once per session, mode-INDEPENDENT) ---
-# Inject the typed memory/ layer (prefs/feedback/reference) so the agent applies durable
-# "how to work with this user & repo" guidance from the start. Auto-hygiene: if
-# --memory-check flags red conditions, append a prune instruction. Cheap `-d` guard just
-# avoids spawning when there's no memory/ at all; PROVENANCE (real Jeeves store vs an
-# unrelated ML/agent memory/ dir) is the engine's job — it returns present:false unless
-# ≥1 entry has a recognized type, so a random dir spawns once then is never injected.
+# (1) READ: inject the typed memory/ layer (prefs/feedback/reference), prompt-SCORED so the
+#     most relevant entries surface first, so the agent applies durable "how to work with
+#     this user & repo" guidance from the start. Cheap `-d` guard just avoids spawning when
+#     there's no memory/ at all; PROVENANCE (real Jeeves store vs an unrelated ML/agent
+#     memory/ dir) is the engine's job — it returns present:false unless ≥1 entry has a
+#     recognized type, so a random dir spawns once then is never injected.
+# HYGIENE is NOT surfaced here — it fires at session END (thinking-capture-gate Stop hook)
+# so a prune ask lands when work winds down, not on the opening prompt.
 MEMORY_MSG=""
 if [ "$memory_injected" != "1" ] && [ -d "$CWD/memory" ]; then
-  MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
+  MC=$("${JEEVES[@]}" "$CWD" --memory-check --prompt "$PROMPT" --json 2>/dev/null)
   # Latch only once the check actually RAN (valid JSON) — a transient spawn failure
   # retries next prompt instead of silently disabling memory for the whole session.
   if printf '%s' "$MC" | jq -e . >/dev/null 2>&1; then
     memory_injected=1
     if [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
       MEMORY_MSG=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
-      if [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
-        MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
-        MEMORY_MSG="${MEMORY_MSG} [Jeeves] MEMORY HYGIENE (${MREASON}): review memory/ and prune — delete entries no longer true, merge overlapping ones, fix broken [[links]]. Memory is ephemeral; wipe what's stale."
-      fi
     fi
   fi
+fi
+
+# (2) WRITE PROTOCOL (D1): instruct the agent to capture new durable prefs/feedback/reference
+# SILENTLY as they surface. Fires once per session in any Jeeves-active project (has memory/
+# OR a KB → MODE != none), even before memory/ exists, so capture can bootstrap it. Without
+# this, memory/ is read-only and never grows.
+MEMORY_PROTOCOL_MSG=""
+if [ "$memory_protocol_injected" != "1" ] && { [ -d "$CWD/memory" ] || [ "$MODE" != "none" ]; }; then
+  MEMORY_PROTOCOL_MSG="$MEMORY_PROTOCOL"
+  memory_protocol_injected=1
 fi
 
 CTX=""
@@ -191,6 +210,7 @@ fi
   echo "version_warned=$version_warned"
   echo "signup_nudged=$signup_nudged"
   echo "memory_injected=$memory_injected"
+  echo "memory_protocol_injected=$memory_protocol_injected"
 } > "$STATE" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
@@ -198,8 +218,10 @@ fi
 FULL_CTX="$CTX"
 [ -n "$REGISTRATION_MSG" ] && FULL_CTX="${REGISTRATION_MSG}${CTX:+ }${CTX}"
 # Memory rides ahead of thinking-mode context (durable behavioral guidance applies to
-# every mode), but behind the version warning.
+# every mode), but behind the version warning. The capture PROTOCOL (write path) leads the
+# memory READ payload so the "capture as you go" instruction is seen first.
 [ -n "$MEMORY_MSG" ] && FULL_CTX="${MEMORY_MSG}${FULL_CTX:+ }${FULL_CTX}"
+[ -n "$MEMORY_PROTOCOL_MSG" ] && FULL_CTX="${MEMORY_PROTOCOL_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"
 
 if [ -n "$FULL_CTX" ]; then

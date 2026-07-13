@@ -25,7 +25,7 @@ const TOOLS = [
   {
     name: "jeeves_search",
     description:
-      "Search the project's knowledge base (docs/internal/patterns and docs/internal/decisions) for a query string. Returns matching files with line numbers and excerpts. Use this when you need to recall what the project already knows about a topic before reading files or asking the user.",
+      "Search the project's knowledge base (docs/internal/patterns, docs/internal/decisions) AND the memory/ layer (durable prefs/feedback/reference on how to work with this user & repo) for a query string. Returns matching files with line numbers and excerpts. Use this to recall what the project already knows about a topic — or to pull a relevant memory mid-task — before reading files or asking the user.",
     inputSchema: {
       type: "object",
       properties: {
@@ -33,8 +33,8 @@ const TOOLS = [
         project: { type: "string", description: "Absolute path to the project root. Defaults to cwd." },
         scope: {
           type: "string",
-          enum: ["all", "patterns", "decisions"],
-          description: "Which subset of the KB to search. Defaults to 'all'.",
+          enum: ["all", "patterns", "decisions", "memory"],
+          description: "Which subset to search: 'all' (KB + memory), 'patterns', 'decisions', or 'memory'. Defaults to 'all'.",
         },
         limit: { type: "number", description: "Max matches to return. Defaults to 20." },
       },
@@ -113,10 +113,13 @@ function searchKb(projectRoot, query, scope, limit) {
   const dirs = [];
   if (scope === "all" || scope === "patterns") dirs.push(path.join(docsRoot, "patterns"));
   if (scope === "all" || scope === "decisions") dirs.push(path.join(docsRoot, "decisions"));
+  // memory/ is a flat dir at the repo root (not under docs/internal) — the collaboration
+  // layer, searchable so the agent can pull a relevant memory mid-task (D3 retrieval).
+  if (scope === "all" || scope === "memory") dirs.push(path.join(projectRoot, "memory"));
 
   const existing = dirs.filter(d => fs.existsSync(d));
   if (existing.length === 0) {
-    return { matches: [], note: `No ${scope} docs found under ${docsRoot}` };
+    return { matches: [], note: `No ${scope} docs found (looked under ${docsRoot} and memory/)` };
   }
 
   // -F: treat the query as a LITERAL string, not a regex (the tool contract says
