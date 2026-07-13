@@ -2065,14 +2065,35 @@ function main() {
   }
 
   if (MODE === "init") {
+    const projectName = path.basename(ROOT);
+    // Memory layer is INDEPENDENT of the code KB. Scaffold it FIRST — before the
+    // already-initialized early-return — so existing users upgrading into the memory
+    // feature still get memory/MEMORY.md (otherwise init early-returns and they never
+    // do). Idempotent: writes only when absent.
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    const memScaffolded = !exists(MEMORY_INDEX);
+    if (memScaffolded) fs.writeFileSync(MEMORY_INDEX,
+`# Memory Index
+
+Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
+DELETE entries that are no longer true. Jeeves injects these at session start.
+
+## User
+## Feedback
+## Reference
+## Project
+`);
+
     // Scaffold the code-mode KB skeleton, then emit instructions for the agent to
     // populate it from the codebase. Idempotent: never clobber an existing KB.
     if (exists(DOCS_DIR)) {
-      console.log(`\n🤵 Jeeves — already initialized (docs/internal/ exists). Nothing to scaffold.`);
+      console.log(`\n🤵 Jeeves — already initialized (docs/internal/ exists).`);
+      if (memScaffolded) console.log(`  + scaffolded memory/MEMORY.md (memory layer is new — populate as prefs/feedback emerge).`);
       console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.\n`);
       return;
     }
-    const projectName = path.basename(ROOT);
     fs.mkdirSync(PATTERNS_DIR, { recursive: true });
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     // SYSTEM-MAP with all 7 canonical sections present (so structure scores + the
@@ -2117,21 +2138,8 @@ Append-only chronological record of KB activity. Newest at top.
 ## Entries
 ## [${today()}] INIT | Knowledge base scaffolded via \`jeeves --init\`.
 `);
-    // Memory layer (collaboration, not code) — scaffold the index; entries are added
-    // as prefs/feedback emerge. Injected at session start by the hook.
-    fs.mkdirSync(MEMORY_DIR, { recursive: true });
-    if (!exists(MEMORY_INDEX)) fs.writeFileSync(MEMORY_INDEX,
-`# Memory Index
-
-Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
-reference. One file per memory (frontmatter: name, description, metadata.type =
-user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
-DELETE entries that are no longer true. Jeeves injects these at session start.
-
-## User
-## Feedback
-## Reference
-`);
+    // (memory/ is scaffolded above, before the early-return, so it also reaches
+    // already-initialized repos.)
     console.log(`\n🤵 Jeeves — initialized ${projectName}\n`);
     console.log(`Scaffolded:`);
     console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
@@ -2159,54 +2167,68 @@ DELETE entries that are no longer true. Jeeves injects these at session start.
     // Read the typed memory/ layer, report hygiene signals, and build the context the
     // session hook injects. Deterministic only — the SEMANTIC prune (stale/contradicted)
     // is the agent's job, triggered when reviewDue flags a red condition.
+    const KNOWN_TYPES = new Set(["user", "feedback", "reference", "project"]);
     if (!exists(MEMORY_DIR)) { process.stdout.write(JSON.stringify({ present: false })); return; }
     interface Mem { file: string; name: string; description: string; type: string; body: string; links: string[]; }
     const entries: Mem[] = [];
-    for (const f of fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md") && f !== "MEMORY.md")) {
+    const stripQuotes = (v: string) => (/^".*"$/.test(v) || /^'.*'$/.test(v)) ? v.slice(1, -1) : v;
+    // .sort() for deterministic order (readdir order is FS-dependent → nondeterministic
+    // budget cuts / report order). Case-insensitive MEMORY.md exclusion (APFS).
+    for (const f of fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md") && f.toLowerCase() !== "memory.md").sort()) {
       let raw = "";
-      try { raw = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8").replace(/\r\n/g, "\n"); } catch { continue; }
+      try { raw = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8"); } catch { continue; }
+      raw = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n"); // strip BOM; normalize CRLF AND lone CR
       const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
       const body = (fm ? raw.slice(fm[0].length) : raw).trim();
       let name = "", description = "", type = "";
       if (fm) for (const line of fm[1].split("\n")) {
         const m = line.match(/^\s*(name|description|type):\s*(.+?)\s*$/);
-        if (m) { if (m[1] === "name") name = m[2]; else if (m[1] === "description") description = m[2]; else if (m[1] === "type") type = m[2]; }
+        if (m) { const v = stripQuotes(m[2]); if (m[1] === "name") name = v; else if (m[1] === "description") description = v; else if (m[1] === "type") type = v; }
       }
       if (!name) name = f.replace(/\.md$/, "");
-      const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+      // [[name]] / [[name|alias]] — resolve on the pre-pipe name.
+      const links = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].split("|")[0].trim());
       entries.push({ file: f, name, description, type: type || "unknown", body, links });
     }
     const count = entries.length;
     const byType: Record<string, number> = {};
     for (const e of entries) byType[e.type] = (byType[e.type] || 0) + 1;
-    // Duplicate descriptions (a hygiene smell — likely overlapping memories).
-    const byDesc = new Map<string, string[]>();
-    for (const e of entries) {
-      if (!e.description) continue;
-      const k = e.description.toLowerCase();
-      const arr = byDesc.get(k) || [];
-      arr.push(e.file); byDesc.set(k, arr);
-    }
+    const pushKey = (map: Map<string, string[]>, k: string, v: string) => { const a = map.get(k); if (a) a.push(v); else map.set(k, [v]); };
+    // Duplicate descriptions / names (overlap smell + [[link]]/header collisions).
+    const byDesc = new Map<string, string[]>(); const byName = new Map<string, string[]>();
+    for (const e of entries) { if (e.description) pushKey(byDesc, e.description.toLowerCase(), e.file); pushKey(byName, e.name.toLowerCase(), e.file); }
     const duplicates = [...byDesc.values()].filter(v => v.length > 1);
-    // Broken [[links]] — reference to a memory name that no longer exists.
-    const names = new Set(entries.map(e => e.name));
+    const dupNames = [...byName.values()].filter(v => v.length > 1);
+    // Broken [[links]] — case-insensitive resolution against known names.
+    const names = new Set(entries.map(e => e.name.toLowerCase()));
     const brokenLinks: string[] = [];
-    for (const e of entries) for (const l of e.links) if (!names.has(l)) brokenLinks.push(`${e.file} → [[${l}]]`);
+    for (const e of entries) for (const l of e.links) if (!names.has(l.toLowerCase())) brokenLinks.push(`${e.file} → [[${l}]]`);
+    // Typo'd / missing type → the entry is silently excluded from injection; flag it.
+    const unknownTypeFiles = entries.filter(e => !KNOWN_TYPES.has(e.type)).map(e => e.file);
     const REVIEW_COUNT = 30;
     const reasons: string[] = [];
     if (count > REVIEW_COUNT) reasons.push(`${count} entries (>${REVIEW_COUNT}) — prune`);
     if (duplicates.length) reasons.push(`${duplicates.length} duplicate description(s)`);
+    if (dupNames.length) reasons.push(`${dupNames.length} duplicate name(s)`);
     if (brokenLinks.length) reasons.push(`${brokenLinks.length} broken [[link]](s)`);
-    const reviewDue = reasons.length > 0;
-    // Injection: the index (compact) + user/feedback bodies up to a budget.
-    const idx = exists(MEMORY_INDEX)
-      ? read(MEMORY_INDEX).trim()
-      : entries.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    if (unknownTypeFiles.length) reasons.push(`${unknownTypeFiles.length} entr${unknownTypeFiles.length === 1 ? "y" : "ies"} with unknown type (use user|feedback|reference|project)`);
+    // Provenance: only a Jeeves memory store if ≥1 entry has a recognized type. Stops an
+    // unrelated memory/ dir (ML checkpoints, agent frameworks) from injecting arbitrary
+    // markdown as authoritative guidance (prompt-injection surface).
+    const valid = entries.filter(e => KNOWN_TYPES.has(e.type));
+    if (valid.length === 0) { process.stdout.write(JSON.stringify({ present: false, count })); return; }
+    // Injection is WHOLE-payload budgeted: index first (capped), user/feedback bodies in
+    // the remaining room, SKIPPING (not breaking on) an oversized entry.
     const BUDGET = 4000;
+    const rawIdx = exists(MEMORY_INDEX) ? read(MEMORY_INDEX).trim() : entries.map(e => `- ${e.name} (${e.type}): ${e.description}`).join("\n");
+    if (rawIdx.length > BUDGET) reasons.push("index oversized — trim MEMORY.md");
+    const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n…(index truncated)" : rawIdx;
+    const reviewDue = reasons.length > 0;
     let bodies = "";
-    for (const e of entries.filter(e => e.type === "user" || e.type === "feedback")) {
+    const bodyBudget = Math.max(0, BUDGET - idx.length);
+    for (const e of valid.filter(e => e.type === "user" || e.type === "feedback")) {
       const chunk = `\n### ${e.name} (${e.type})\n${e.body}\n`;
-      if (bodies.length + chunk.length > BUDGET) break;
+      if (bodies.length + chunk.length > bodyBudget) continue; // skip oversized, keep packing smaller ones
       bodies += chunk;
     }
     const inject = [
@@ -2214,7 +2236,7 @@ DELETE entries that are no longer true. Jeeves injects these at session start.
       idx ? `INDEX:\n${idx}` : "",
       bodies ? `KEY ENTRIES (user/feedback):${bodies}` : "",
     ].filter(Boolean).join("\n\n");
-    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, brokenLinks, reviewDue, reason: reasons.join("; "), inject }));
+    process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, brokenLinks, unknownTypeFiles, reviewDue, reason: reasons.join("; "), inject }));
     return;
   }
 

@@ -136,17 +136,23 @@ fi
 # --- Memory layer (once per session, mode-INDEPENDENT) ---
 # Inject the typed memory/ layer (prefs/feedback/reference) so the agent applies durable
 # "how to work with this user & repo" guidance from the start. Auto-hygiene: if
-# --memory-check flags red conditions (dupes / broken links / over-count), append a
-# prune instruction. Cheap dir guard avoids spawning jeeves when there's no memory/.
+# --memory-check flags red conditions, append a prune instruction. Cheap `-d` guard just
+# avoids spawning when there's no memory/ at all; PROVENANCE (real Jeeves store vs an
+# unrelated ML/agent memory/ dir) is the engine's job — it returns present:false unless
+# ≥1 entry has a recognized type, so a random dir spawns once then is never injected.
 MEMORY_MSG=""
 if [ "$memory_injected" != "1" ] && [ -d "$CWD/memory" ]; then
   MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
-  memory_injected=1
-  if [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
-    MEMORY_MSG=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
-    if [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
-      MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
-      MEMORY_MSG="${MEMORY_MSG} MEMORY HYGIENE (${MREASON}): review memory/ and prune — delete entries no longer true, merge overlapping ones, fix broken [[links]]. Memory is ephemeral; wipe what's stale."
+  # Latch only once the check actually RAN (valid JSON) — a transient spawn failure
+  # retries next prompt instead of silently disabling memory for the whole session.
+  if printf '%s' "$MC" | jq -e . >/dev/null 2>&1; then
+    memory_injected=1
+    if [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
+      MEMORY_MSG=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
+      if [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
+        MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
+        MEMORY_MSG="${MEMORY_MSG} [Jeeves] MEMORY HYGIENE (${MREASON}): review memory/ and prune — delete entries no longer true, merge overlapping ones, fix broken [[links]]. Memory is ephemeral; wipe what's stale."
+      fi
     fi
   fi
 fi
@@ -197,8 +203,12 @@ FULL_CTX="$CTX"
 [ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"
 
 if [ -n "$FULL_CTX" ]; then
-  ESC=$(printf '%s' "$FULL_CTX" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
-  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' "$ESC"
-  exit 0
+  # Build the payload with jq so ARBITRARY content is correctly JSON-escaped. FULL_CTX now
+  # includes user-authored memory markdown; the old hand-rolled `sed` escaped only \ and "
+  # (and `tr` flattened newlines) — a TAB or any control char in a memory file produced
+  # invalid JSON and Claude Code dropped the ENTIRE hook output for that prompt. jq -Rs
+  # handles all control chars + preserves structure. Fail OPEN if jq can't produce output.
+  OUT=$(printf '%s' "$FULL_CTX" | jq -Rsc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}' 2>/dev/null)
+  [ -n "$OUT" ] && { printf '%s\n' "$OUT"; exit 0; }
 fi
 emit_empty
