@@ -74,10 +74,17 @@ function replyError(id, code, message) {
 }
 
 function findJeevesScript(projectRoot) {
+  // Same resolution contract as the hooks: PREFER the prebuilt .cjs (node, fast) over .ts
+  // (tsx), and PREFER the plugin/__dirname copy over a project-local one (a stale vendored
+  // copy runs old/slow logic — the v4.6.2 hazard). project-local is LAST, not first.
+  const P = process.env.CLAUDE_PLUGIN_ROOT;
   const candidates = [
-    process.env.CLAUDE_PLUGIN_ROOT ? path.join(process.env.CLAUDE_PLUGIN_ROOT, "scripts", "jeeves.ts") : null,
-    path.join(projectRoot, "scripts", "jeeves.ts"),
+    P ? path.join(P, "scripts", "jeeves.cjs") : null,
+    P ? path.join(P, "scripts", "jeeves.ts") : null,
+    path.join(__dirname, "jeeves.cjs"),
     path.join(__dirname, "jeeves.ts"),
+    path.join(projectRoot, "scripts", "jeeves.cjs"),
+    path.join(projectRoot, "scripts", "jeeves.ts"),
   ].filter(Boolean);
   for (const c of candidates) {
     try {
@@ -91,9 +98,12 @@ function findJeevesScript(projectRoot) {
 function runJeevesJson(projectRoot, mode) {
   const script = findJeevesScript(projectRoot);
   if (!script) {
-    return { error: `Cannot locate jeeves.ts (looked in CLAUDE_PLUGIN_ROOT, ${projectRoot}/scripts, plugin dir)` };
+    return { error: `Cannot locate jeeves engine (looked for jeeves.cjs/.ts in CLAUDE_PLUGIN_ROOT, plugin dir, ${projectRoot}/scripts)` };
   }
-  const result = spawnSync("npx", ["tsx", script, projectRoot, `--${mode}`, "--json"], {
+  // .cjs runs under node directly; .ts needs the tsx loader via npx.
+  const isCjs = script.endsWith(".cjs");
+  const [cmd, pre] = isCjs ? ["node", []] : ["npx", ["tsx"]];
+  const result = spawnSync(cmd, [...pre, script, projectRoot, `--${mode}`, "--json"], {
     cwd: projectRoot,
     timeout: 45000,
     encoding: "utf-8",

@@ -72,17 +72,38 @@ session start.
 const MEMORY_CANON_SECTIONS = ["## User", "## Feedback", "## Reference"];
 const MEMORY_DROPPED_SECTIONS = ["## Project"]; // removed in v4.11.0 (schema history)
 const MEMORY_INDEX_TEMPLATE = MEMORY_INDEX_PREAMBLE + "\n" + MEMORY_CANON_SECTIONS.join("\n") + "\n";
+// The pre-4.11.0 preamble (schema history). Used only to RECOGNIZE Jeeves-authored boilerplate
+// when migrating, so a user's own lines above the sections are preserved, not clobbered.
+const MEMORY_PREAMBLE_4_10 = `# Memory Index
 
-// Repair a MEMORY.md index to the current schema WITHOUT touching user content: rewrite the
-// Jeeves-authored preamble, drop EMPTY dropped-schema sections (## Project), ensure the
-// canonical sections exist. A dropped section that STILL HAS entries is kept and REPORTED —
-// Jeeves can't know the right replacement type, so the user/agent retypes it. Returns the
-// repaired text, whether anything changed, and human-readable follow-up notes.
+Durable, PRUNABLE notes on how to work with this user & repo — preferences, feedback,
+reference. One file per memory (frontmatter: name, description, metadata.type =
+user|feedback|reference|project). Unlike the code KB, memory is ephemeral: overwrite or
+DELETE entries that are no longer true. Jeeves injects these at session start.
+`;
+// Every line (trimmed) that has ever been part of a Jeeves-authored preamble. A pre-section
+// line NOT in this set is user content and must survive migration.
+const MEMORY_KNOWN_PREAMBLE_LINES = new Set(
+  (MEMORY_INDEX_PREAMBLE + "\n" + MEMORY_PREAMBLE_4_10).split("\n").map(l => l.trim()).filter(Boolean)
+);
+const isDroppedSection = (head: string) => MEMORY_DROPPED_SECTIONS.some(d => d.toLowerCase() === head.toLowerCase());
+
+// Repair a MEMORY.md index to the current schema WITHOUT losing user content: normalize the
+// Jeeves-authored preamble, PRESERVE any user lines that were above the sections, drop EMPTY
+// dropped-schema sections (## Project, case-insensitively), ensure the canonical sections
+// exist. A dropped section that STILL HAS entries is kept and REPORTED — Jeeves can't know the
+// right replacement type. Returns the repaired text, whether it changed, and follow-up notes.
 function migrateMemoryIndex(raw: string): { content: string; changed: boolean; report: string[] } {
   const report: string[] = [];
-  const norm = raw.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const norm = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const firstH = norm.search(/^## /m);
+  const preamble = firstH >= 0 ? norm.slice(0, firstH) : norm;
   const sectionsRaw = firstH >= 0 ? norm.slice(firstH) : "";
+  // Preserve any pre-section line the user wrote (not recognized Jeeves boilerplate). The
+  // canonical preamble is re-emitted fresh; custom lines are appended after it so they survive.
+  const customLines = preamble.split("\n").map(l => l.replace(/\s+$/, ""))
+    .filter(l => l.trim() && !MEMORY_KNOWN_PREAMBLE_LINES.has(l.trim()));
+  if (customLines.length) report.push(`preserved ${customLines.length} custom line(s) above the sections — verify they still belong`);
   const groups: { head: string; body: string[] }[] = [];
   let cur: { head: string; body: string[] } | null = null;
   for (const ln of sectionsRaw.split("\n")) {
@@ -92,7 +113,7 @@ function migrateMemoryIndex(raw: string): { content: string; changed: boolean; r
   const isEmpty = (g: { body: string[] }) => g.body.every(l => l.trim() === "");
   const kept: typeof groups = [];
   for (const g of groups) {
-    if (MEMORY_DROPPED_SECTIONS.includes(g.head)) {
+    if (isDroppedSection(g.head)) {
       if (isEmpty(g)) { report.push(`removed empty "${g.head}" section (dropped type)`); continue; }
       report.push(`"${g.head}" still has entries — retype them to user|feedback|reference and move their index lines, then delete the section`);
     }
@@ -103,8 +124,24 @@ function migrateMemoryIndex(raw: string): { content: string; changed: boolean; r
     const trimmed = g.body.join("\n").replace(/\n+$/, "");
     return trimmed ? `${g.head}\n${trimmed}` : g.head;
   }).join("\n");
-  const content = MEMORY_INDEX_PREAMBLE + "\n" + body + "\n";
+  const preambleOut = MEMORY_INDEX_PREAMBLE + (customLines.length ? "\n" + customLines.join("\n") + "\n" : "");
+  const content = preambleOut + "\n" + body + "\n";
   return { content, changed: content !== norm, report };
+}
+
+// Read the frontmatter `type` of a memory entry file. Iterates all frontmatter lines and takes
+// the LAST `type:` (parity with --memory-check, so both modes agree on a file's type). Returns
+// "" when absent/unparseable. Shared by --migrate and any type-aware mode.
+function memoryEntryType(raw: string): string {
+  const norm = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const fm = norm.match(/^---\n([\s\S]*?)\n---/);
+  if (!fm) return "";
+  let t = "";
+  for (const line of fm[1].split("\n")) {
+    const m = line.match(/^\s*type:\s*(.+?)\s*$/);
+    if (m) t = m[1].replace(/^["']|["']$/g, "").trim();
+  }
+  return t;
 }
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -2114,6 +2151,12 @@ function main() {
 
   if (MODE === "init") {
     const projectName = path.basename(ROOT);
+    // Running init IS "starting to use Jeeves" — so clear any `.jeeves-no-kb` opt-out the
+    // user set earlier when they declined the bootstrap offer. Leaving it would be stale and
+    // contradictory (and would wrongly re-suppress the offer if the KB were ever removed).
+    const optOut = path.join(ROOT, ".jeeves-no-kb");
+    let optOutCleared = false;
+    if (exists(optOut)) { try { fs.unlinkSync(optOut); optOutCleared = true; } catch {} }
     // Memory layer is INDEPENDENT of the code KB. Scaffold it FIRST — before the
     // already-initialized early-return — so existing users upgrading into the memory
     // feature still get memory/MEMORY.md (otherwise init early-returns and they never
@@ -2134,6 +2177,7 @@ function main() {
     // populate it from the codebase. Idempotent: never clobber an existing KB.
     if (exists(DOCS_DIR)) {
       console.log(`\n🤵 Jeeves — already initialized (docs/internal/ exists).`);
+      if (optOutCleared) console.log(`  + cleared the .jeeves-no-kb opt-out (you're using Jeeves now).`);
       if (memScaffolded) console.log(`  + scaffolded memory/MEMORY.md (memory layer is new — populate as prefs/feedback emerge).`);
       if (memRepaired) console.log(`  + repaired memory/MEMORY.md scaffold to the current schema (run \`jeeves --migrate\` for a full report).`);
       console.log(`Run \`jeeves\` to see actions, or \`--check\` for KB state.\n`);
@@ -2186,6 +2230,7 @@ Append-only chronological record of KB activity. Newest at top.
     // (memory/ is scaffolded above, before the early-return, so it also reaches
     // already-initialized repos.)
     console.log(`\n🤵 Jeeves — initialized ${projectName}\n`);
+    if (optOutCleared) console.log(`Cleared the .jeeves-no-kb opt-out — you're using Jeeves now.\n`);
     console.log(`Scaffolded:`);
     console.log(`  docs/internal/SYSTEM-MAP.md   (7-section skeleton)`);
     console.log(`  docs/internal/log.md          (activity log)`);
@@ -2233,10 +2278,7 @@ Append-only chronological record of KB activity. Newest at top.
     const droppedTypeFiles: string[] = [];
     for (const f of fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md") && f.toLowerCase() !== "memory.md")) {
       let r = ""; try { r = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8"); } catch { continue; }
-      const fm = r.replace(/^﻿/, "").replace(/\r\n?/g, "\n").match(/^---\n([\s\S]*?)\n---/);
-      if (!fm) continue;
-      const tm = fm[1].match(/^\s*type:\s*(.+?)\s*$/m);
-      const t = tm ? tm[1].replace(/^["']|["']$/g, "").trim() : "";
+      const t = memoryEntryType(r); // shared parser → migrate and memory-check agree on type
       if (t && !["user", "feedback", "reference"].includes(t)) droppedTypeFiles.push(`${f} (type: ${t})`);
     }
     if (droppedTypeFiles.length) {
@@ -2351,7 +2393,10 @@ Append-only chronological record of KB activity. Newest at top.
     // Schema drift: a MEMORY.md written by an older Jeeves still references the dropped
     // `project` type (old preamble `…|project` or an empty `## Project` section). Surface it
     // so the session-end hygiene banner points the user at `jeeves --migrate` (which heals it).
-    if (/\|\s*project\b/i.test(rawIdx) || /^##\s+Project\s*$/m.test(rawIdx)) reasons.push("index uses the dropped `project` schema — run jeeves --migrate to heal it");
+    // Match the OLD type-list token specifically (`…reference|project`) — not any stray
+    // "| project" (a table cell / description), which would nag forever — plus a `## Project`
+    // section header (case-insensitive). Both are unambiguous pre-4.11.0 signatures.
+    if (/reference\s*\|\s*project\b/i.test(rawIdx) || /^##\s+project\s*$/im.test(rawIdx)) reasons.push("index uses the dropped `project` schema — run jeeves --migrate to heal it");
     const idx = rawIdx.length > BUDGET ? rawIdx.slice(0, BUDGET) + "\n…(index truncated)" : rawIdx;
     const reviewDue = reasons.length > 0;
     // Always-on core = user + feedback (durable behavioural guidance). With a prompt, also

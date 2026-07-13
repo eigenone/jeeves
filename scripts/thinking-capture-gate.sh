@@ -46,8 +46,18 @@ else
 fi
 
 prompts=0; last_block_turn=0; block_count=0; head_at_last_check=""; since=""; last_commit_prompt=0
-if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
-# Coerce counters to clean integers after sourcing — a corrupt/hand-edited value must
+# Load state SAFELY by PARSING key=value — never `source` it (v4.14.0): sourcing a /tmp file
+# executes any `$(...)` in a corrupt/tampered value. Whitelisted keys only; `eval "$k=\$v"`
+# binds the literal value (no command-substitution re-run). Counters coerced to ints below.
+if [ -f "$STATE" ]; then
+  while IFS='=' read -r _k _v || [ -n "$_k" ]; do
+    case "$_k" in
+      prompts|last_block_turn|block_count|head_at_last_check|since|last_commit_prompt)
+        _v="${_v%\"}"; _v="${_v#\"}"; eval "$_k=\$_v" ;;
+    esac
+  done < "$STATE" 2>/dev/null || true
+fi
+# Coerce counters to clean integers — a corrupt/hand-edited value must
 # not break the arithmetic below or let the block ceiling be bypassed.
 for _v in prompts last_block_turn block_count last_commit_prompt; do
   eval "_cur=\${$_v}"
@@ -61,17 +71,28 @@ turn=$prompts
 # user-facing systemMessage banner so the prune ask lands when work is winding down, NOT on
 # the opening prompt (session-check deliberately does not carry hygiene). At most once per
 # session via a sentinel file (independent of session-check's state, which it overwrites
-# every prompt). Non-blocking: the banner rides the allow path; capture is opportunistic and
-# an empty/tidy memory is the common, correct case — this never blocks the stop.
+# every prompt).
+#
+# CRITICAL ORDERING (v4.14.0 fix): compute this ONLY on the ALLOW path, and set the sentinel
+# ONLY after a SUCCESSFUL --memory-check. Earlier this ran before the block decision, so a
+# blocking Stop dropped the banner AND burned the sentinel (hygiene lost for the session), and
+# a transient check failure also burned it. Now: if the gate blocks, the banner is DEFERRED to
+# a later non-blocking Stop; a failed check leaves the sentinel unset to retry next Stop.
 MEMHYG_MARK="${STATE}-memhyg"
-if [ -d "$CWD/memory" ] && [ ! -f "$MEMHYG_MARK" ]; then
-  touch "$MEMHYG_MARK" 2>/dev/null || true
+compute_memhyg() {
+  [ -d "$CWD/memory" ] || return 0
+  [ -f "$MEMHYG_MARK" ] && return 0
+  local MC MREASON
   MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
-  if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ]; then
-    MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
-    SYSMSG="Jeeves memory hygiene (${MREASON}): memory/ could use a prune — delete entries no longer true, merge overlapping/near-duplicate ones, re-verify stale-dated ones, fix broken [[links]]. Run /jeeves:memory or just ask. Memory is ephemeral."
-  fi
-fi
+  printf '%s' "$MC" | jq -e . >/dev/null 2>&1 || return 0   # check failed -> no sentinel, retry next Stop
+  touch "$MEMHYG_MARK" 2>/dev/null || true                  # checked this session -> don't re-run
+  [ "$(printf '%s' "$MC" | jq -r '.reviewDue // false' 2>/dev/null)" = "true" ] || return 0
+  MREASON=$(printf '%s' "$MC" | jq -r '.reason // empty' 2>/dev/null)
+  SYSMSG="Jeeves memory hygiene (${MREASON}): memory/ could use a prune — delete entries no longer true, merge overlapping/near-duplicate ones, re-verify stale-dated ones, fix broken [[links]]. Run /jeeves:memory or just ask. Memory is ephemeral."
+}
+# Hygiene-aware allow: surface the banner (once/session) on a clean allow, then fall through
+# to the normal fail-open allow (which emits SYSMSG if set, else '{}').
+allow_hy() { compute_memhyg; allow; }
 
 # Use the per-session baseline + last-commit index recorded by session-check
 # (Layer 1/2). The gate never observes commits itself (session-check runs every
@@ -80,16 +101,16 @@ fi
 # session-check ran (no state), since="" -> 0 and last_commit_prompt=0 (no
 # deferral) — conservative defaults.
 CC=$("${JEEVES[@]}" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
-[ -z "$CC" ] && allow
+[ -z "$CC" ] && allow_hy
 SHOULD_BLOCK=$(printf '%s' "$CC" | jq -r '.shouldBlock // false' 2>/dev/null)
-[ "$SHOULD_BLOCK" != "true" ] && allow
+[ "$SHOULD_BLOCK" != "true" ] && allow_hy
 
 # ceiling
-[ "$block_count" -ge "$BLOCK_CEILING" ] && allow
+[ "$block_count" -ge "$BLOCK_CEILING" ] && allow_hy
 # debounce: not within BLOCK_DEBOUNCE turns of last block, never consecutive
 if [ "$last_block_turn" -gt 0 ]; then
   delta=$((turn - last_block_turn))
-  [ "$delta" -lt "$BLOCK_DEBOUNCE" ] && allow
+  [ "$delta" -lt "$BLOCK_DEBOUNCE" ] && allow_hy
 fi
 
 block_count=$((block_count + 1))

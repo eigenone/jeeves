@@ -48,13 +48,20 @@ fi
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
 last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0; kb_offered=0
-# Sourcing the state file evaluates it as shell. Defense in depth: (1) values are
-# sanitized to safe character classes BEFORE they are ever written (see below), so
-# nothing shell-active can enter the file; (2) after loading we coerce every counter
-# back to a clean integer, so a corrupted/hand-edited file can't break arithmetic or
-# bypass the block ceiling. STATE is keyed on a sanitized session id under /tmp
-# (sticky bit, same-UID). Not for multi-tenant; fine for single-user dev.
-if [ -f "$STATE" ]; then . "$STATE" 2>/dev/null || true; fi
+# Load state SAFELY by PARSING key=value — never `source` it (v4.14.0). Sourcing a /tmp file
+# executes any `$(...)`/backticks in a corrupt or tampered value at read time, before the
+# coercion below can run. Here only WHITELISTED keys are assigned, and `eval "$k=\$v"` binds
+# the LITERAL value (parameter expansion does not re-run command substitution on it). Counters
+# are still coerced to clean integers afterwards. STATE is keyed on a sanitized session id
+# under /tmp (sticky bit, same-UID); single-user dev, not multi-tenant.
+if [ -f "$STATE" ]; then
+  while IFS='=' read -r _k _v || [ -n "$_k" ]; do
+    case "$_k" in
+      prompts|nudge_level|bootstrapped|layer1_injected|head_at_last_check|last_block_turn|block_count|since|last_commit_prompt|version_warned|signup_nudged|memory_injected|memory_protocol_injected|kb_offered)
+        _v="${_v%\"}"; _v="${_v#\"}"; eval "$_k=\$_v" ;;
+    esac
+  done < "$STATE" 2>/dev/null || true
+fi
 for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected kb_offered; do
   eval "_cur=\${$_v}"
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
