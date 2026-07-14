@@ -47,7 +47,7 @@ fi
 
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
-last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0; kb_offered=0
+last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0; kb_offered=0; kb_core_injected=0
 # Load state SAFELY by PARSING key=value — never `source` it (v4.14.0). Sourcing a /tmp file
 # executes any `$(...)`/backticks in a corrupt or tampered value at read time, before the
 # coercion below can run. Here only WHITELISTED keys are assigned, and `eval "$k=\$v"` binds
@@ -57,12 +57,12 @@ last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned
 if [ -f "$STATE" ]; then
   while IFS='=' read -r _k _v || [ -n "$_k" ]; do
     case "$_k" in
-      prompts|nudge_level|bootstrapped|layer1_injected|head_at_last_check|last_block_turn|block_count|since|last_commit_prompt|version_warned|signup_nudged|memory_injected|memory_protocol_injected|kb_offered)
+      prompts|nudge_level|bootstrapped|layer1_injected|head_at_last_check|last_block_turn|block_count|since|last_commit_prompt|version_warned|signup_nudged|memory_injected|memory_protocol_injected|kb_offered|kb_core_injected)
         _v="${_v%\"}"; _v="${_v#\"}"; eval "$_k=\$_v" ;;
     esac
   done < "$STATE" 2>/dev/null || true
 fi
-for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected kb_offered; do
+for _v in prompts nudge_level bootstrapped layer1_injected last_block_turn block_count last_commit_prompt version_warned signup_nudged memory_injected memory_protocol_injected kb_offered kb_core_injected; do
   eval "_cur=\${$_v}"
   case "$_cur" in ''|*[!0-9]*) eval "$_v=0" ;; esac
 done
@@ -199,6 +199,34 @@ if [ "$kb_offered" != "1" ] && [ "$MODE" = "none" ] && [ "$CAND" = "no" ] && [ !
   kb_offered=1
 fi
 
+# --- KB read loop (v4.17.0, code/both mode) ---
+# The code KB was write-only: Jeeves nagged you to WRITE docs but never surfaced them when
+# work started. Inject the SYSTEM-MAP core pointer once per session, plus doc pointers scored
+# against THIS prompt (so relevance tracks the current task, not prompt 1). Each doc pointer is
+# shown at most once per session (sentinel file), so it surfaces the moment it first matches.
+KB_MSG=""
+if [ "$MODE" = "code" ] || [ "$MODE" = "both" ]; then
+  KB=$("${JEEVES[@]}" "$CWD" --kb-check --prompt "$PROMPT" --json 2>/dev/null)
+  if printf '%s' "$KB" | jq -e . >/dev/null 2>&1; then
+    if [ "$kb_core_injected" != "1" ]; then
+      CORE=$(printf '%s' "$KB" | jq -r '.core // empty' 2>/dev/null)
+      [ -n "$CORE" ] && { KB_MSG="Jeeves KB — ${CORE}"; kb_core_injected=1; }
+    fi
+    KBSHOWN="${STATE}-kbshown"; NEWPTRS=""
+    while IFS= read -r _p; do
+      [ -z "$_p" ] && continue
+      _pp="${_p%% —*}"   # doc path portion
+      if ! { [ -f "$KBSHOWN" ] && grep -qxF "$_pp" "$KBSHOWN" 2>/dev/null; }; then
+        NEWPTRS="${NEWPTRS:+$NEWPTRS; }$_p"
+        echo "$_pp" >> "$KBSHOWN" 2>/dev/null || true
+      fi
+    done <<KBEOF
+$(printf '%s' "$KB" | jq -r '.pointers[]? // empty' 2>/dev/null)
+KBEOF
+    [ -n "$NEWPTRS" ] && KB_MSG="${KB_MSG:+$KB_MSG }Relevant KB (read before working on this): ${NEWPTRS}"
+  fi
+fi
+
 CTX=""
 if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
   if [ "$layer1_injected" != "1" ]; then
@@ -239,6 +267,7 @@ _STATE_TMP="${STATE}.tmp.$$"
   echo "memory_injected=$memory_injected"
   echo "memory_protocol_injected=$memory_protocol_injected"
   echo "kb_offered=$kb_offered"
+  echo "kb_core_injected=$kb_core_injected"
 } > "$_STATE_TMP" 2>/dev/null && mv "$_STATE_TMP" "$STATE" 2>/dev/null || rm -f "$_STATE_TMP" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
@@ -250,6 +279,8 @@ FULL_CTX="$CTX"
 # memory READ payload so the "capture as you go" instruction is seen first.
 [ -n "$MEMORY_MSG" ] && FULL_CTX="${MEMORY_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$MEMORY_PROTOCOL_MSG" ] && FULL_CTX="${MEMORY_PROTOCOL_MSG}${FULL_CTX:+ }${FULL_CTX}"
+# KB read-loop pointers ride with memory (durable "read this" guidance), ahead of thinking ctx.
+[ -n "$KB_MSG" ] && FULL_CTX="${KB_MSG}${FULL_CTX:+ }${FULL_CTX}"
 # The fresh-repo bootstrap ask rides near the front — it's an explicit question TO the user.
 [ -n "$KB_OFFER_MSG" ] && FULL_CTX="${KB_OFFER_MSG}${FULL_CTX:+ }${FULL_CTX}"
 [ -n "$VERSION_MSG" ] && FULL_CTX="${VERSION_MSG}${FULL_CTX:+ }${FULL_CTX}"

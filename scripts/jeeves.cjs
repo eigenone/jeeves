@@ -32,7 +32,7 @@ var ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"];
+var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check"];
 var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
 var JSON_OUT = process.argv.includes("--json");
 function argVal(flag) {
@@ -157,6 +157,13 @@ function gitPrefix() {
   if (_gitPrefix === null) _gitPrefix = (runGit(["rev-parse", "--show-prefix"]) || "").trim();
   return _gitPrefix;
 }
+var wordSet = (s) => new Set(s.toLowerCase().match(/[a-z0-9]{3,}/g) || []);
+var jaccard = (a, b) => {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  return inter / (a.size + b.size - inter);
+};
 var _commitTimeCache = /* @__PURE__ */ new Map();
 function gitCommitTime(relFile) {
   if (_commitTimeCache.has(relFile)) return _commitTimeCache.get(relFile);
@@ -801,7 +808,7 @@ ${actions.map((a) => `- [${a.priority}] ${a.type}: ${a.description}`).join("\n")
 }
 function main() {
   const state = detectState();
-  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking"]);
+  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check"]);
   const git = GITLESS_MODES.has(MODE) ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] } : getGitChanges();
   if (MODE === "research") {
     const topic = process.argv.slice(process.argv.indexOf("--research") + 1).filter((a) => !a.startsWith("-")).join(" ") || "untitled";
@@ -1857,13 +1864,6 @@ All memory entries use valid types.`);
     }
     const duplicates = [...byDesc.values()].filter((v) => v.length > 1);
     const dupNames = [...byName.values()].filter((v) => v.length > 1);
-    const wordSet = (s) => new Set(s.toLowerCase().match(/[a-z0-9]{3,}/g) || []);
-    const jaccard = (a, b) => {
-      if (!a.size || !b.size) return 0;
-      let inter = 0;
-      for (const w of a) if (b.has(w)) inter++;
-      return inter / (a.size + b.size - inter);
-    };
     const nearDupes = [];
     const withDesc = entries.filter((e) => e.description);
     for (let i = 0; i < withDesc.length; i++) for (let j = i + 1; j < withDesc.length; j++) {
@@ -1931,6 +1931,36 @@ ${idx}` : "",
       bodies ? `KEY ENTRIES:${bodies}` : ""
     ].filter(Boolean).join("\n\n");
     process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, nearDupes, brokenLinks, unknownTypeFiles, staleAge, reviewDue, reason: reasons.join("; "), inject }));
+    return;
+  }
+  if (MODE === "kb-check") {
+    if (!exists(DOCS_DIR)) {
+      process.stdout.write(JSON.stringify({ present: false }));
+      return;
+    }
+    const core = exists(SYSTEM_MAP) ? "docs/internal/SYSTEM-MAP.md \u2014 the project map; read it first." : "";
+    const promptArg = argVal("--prompt") || "";
+    const pw = wordSet(promptArg);
+    const docs = [];
+    for (const [dir, label] of [[PATTERNS_DIR, "patterns"], [DECISIONS_DIR, "decisions"]]) {
+      if (!exists(dir)) continue;
+      for (const f of fs.readdirSync(dir).filter((f2) => f2.endsWith(".md")).sort()) {
+        let raw = "";
+        try {
+          raw = read(path.join(dir, f));
+        } catch {
+          continue;
+        }
+        const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "");
+        const title = (body.match(/^#\s+(.+)$/m)?.[1] || f.replace(/\.md$/, "")).trim();
+        const blurb = body.replace(/^#.*$/m, "").replace(/\n+/g, " ").trim().slice(0, 200);
+        docs.push({ path: `docs/internal/${label}/${f}`, title, blurb });
+      }
+    }
+    const scored = docs.map((d) => ({ d, s: pw.size ? jaccard(pw, wordSet(`${d.title} ${d.path} ${d.blurb}`)) : 0 })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
+    const pointers = scored.map((x) => `${x.d.path} \u2014 ${x.d.title}`);
+    const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
+    process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
     return;
   }
   if (MODE === "bootstrap-thinking") {

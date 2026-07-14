@@ -41,7 +41,7 @@ const ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check"] as const;
+const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 function argVal(flag: string): string | undefined {
@@ -206,6 +206,12 @@ function gitPrefix(): string {
   if (_gitPrefix === null) _gitPrefix = (runGit(["rev-parse", "--show-prefix"]) || "").trim();
   return _gitPrefix;
 }
+
+// Lexical relevance scoring — shared by --memory-check and --kb-check (v4.17.0). wordSet
+// tokenizes to lowercase words ≥3 chars; jaccard is set-overlap / union. Good enough to rank a
+// handful of entries against the user's prompt; not a semantic engine.
+const wordSet = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g) || []));
+const jaccard = (a: Set<string>, b: Set<string>) => { if (!a.size || !b.size) return 0; let inter = 0; for (const w of a) if (b.has(w)) inter++; return inter / (a.size + b.size - inter); };
 
 // Last-commit time (epoch seconds) for a repo-relative file, memoized. 0 = not
 // committed / unknown. Commit time is reliable across clones/checkouts; mtime is not
@@ -1199,7 +1205,7 @@ function main() {
   // Hot-path modes run on EVERY user prompt (session-check) / turn-end (Stop gate)
   // under a tight hook timeout and never read `git` — skip the 6 git subprocesses
   // getGitChanges() spawns. (Verified: these blocks contain no `git.` references.)
-  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking"]);
+  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check"]);
   const git: GitChanges = GITLESS_MODES.has(MODE)
     ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] }
     : getGitChanges();
@@ -2359,8 +2365,6 @@ Append-only chronological record of KB activity. Newest at top.
     // (Jaccard ≥ 0.6) — the "two entries saying almost the same thing" smell that exact-
     // match dup detection misses. Tokenize to words ≥3 chars; skip exact matches (already
     // caught above). O(n²) but bounded by the review-count guard in practice.
-    const wordSet = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g) || []));
-    const jaccard = (a: Set<string>, b: Set<string>) => { if (!a.size || !b.size) return 0; let inter = 0; for (const w of a) if (b.has(w)) inter++; return inter / (a.size + b.size - inter); };
     const nearDupes: string[] = [];
     const withDesc = entries.filter(e => e.description);
     for (let i = 0; i < withDesc.length; i++) for (let j = i + 1; j < withDesc.length; j++) {
@@ -2445,6 +2449,41 @@ Append-only chronological record of KB activity. Newest at top.
       bodies ? `KEY ENTRIES:${bodies}` : "",
     ].filter(Boolean).join("\n\n");
     process.stdout.write(JSON.stringify({ present: true, count, byType, duplicates, dupNames, nearDupes, brokenLinks, unknownTypeFiles, staleAge, reviewDue, reason: reasons.join("; "), inject }));
+    return;
+  }
+
+  if (MODE === "kb-check") {
+    // KB READ LOOP (v4.17.0): the code KB was write-only — Jeeves nagged you to WRITE docs but
+    // never surfaced them when work started. This scores pattern/decision docs against the
+    // user's current prompt and returns relevant POINTERS (not bodies) so the agent reads the
+    // right doc before touching a subsystem. `core` = the always-relevant SYSTEM-MAP pointer
+    // (session hook injects it once/session); `pointers` = prompt-scored docs (per prompt,
+    // deduped by the hook). Cheap: reads a few dozen doc headers, no git.
+    if (!exists(DOCS_DIR)) { process.stdout.write(JSON.stringify({ present: false })); return; }
+    const core = exists(SYSTEM_MAP) ? "docs/internal/SYSTEM-MAP.md — the project map; read it first." : "";
+    const promptArg = argVal("--prompt") || "";
+    const pw = wordSet(promptArg);
+    interface KbDoc { path: string; title: string; blurb: string; }
+    const docs: KbDoc[] = [];
+    for (const [dir, label] of [[PATTERNS_DIR, "patterns"], [DECISIONS_DIR, "decisions"]] as const) {
+      if (!exists(dir)) continue;
+      for (const f of fs.readdirSync(dir).filter(f => f.endsWith(".md")).sort()) {
+        let raw = ""; try { raw = read(path.join(dir, f)); } catch { continue; }
+        const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, ""); // strip frontmatter
+        const title = (body.match(/^#\s+(.+)$/m)?.[1] || f.replace(/\.md$/, "")).trim();
+        const blurb = body.replace(/^#.*$/m, "").replace(/\n+/g, " ").trim().slice(0, 200);
+        docs.push({ path: `docs/internal/${label}/${f}`, title, blurb });
+      }
+    }
+    // Rank by prompt overlap; only surface docs that actually match (score > 0), top 3.
+    const scored = docs
+      .map(d => ({ d, s: pw.size ? jaccard(pw, wordSet(`${d.title} ${d.path} ${d.blurb}`)) : 0 }))
+      .filter(x => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 3);
+    const pointers = scored.map(x => `${x.d.path} — ${x.d.title}`);
+    const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
+    process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
     return;
   }
 
