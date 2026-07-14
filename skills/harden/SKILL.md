@@ -36,6 +36,11 @@ bash ${CLAUDE_PLUGIN_ROOT}/scripts/health-score.sh
 ```
 Report the health score to the user.
 
+```bash
+npx tsx ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts --design
+```
+Suggest missing pattern docs for undocumented code directories (create the high-value ones).
+
 ## Sub-commands
 
 If user said "annotate" or "add comments":

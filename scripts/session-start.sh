@@ -17,8 +17,8 @@ case "$SOURCE" in compact|resume) ;; *) emit_empty ;; esac
 
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
-# Nothing to re-inject unless this project uses memory/ and/or thinking/.
-[ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || emit_empty
+# Nothing to re-inject unless Jeeves is active here (memory/, thinking/, or a code KB).
+[ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ] || emit_empty
 
 # Resolve the engine (same contract as session-check.sh: prefer the plugin copy over a stale
 # project-local one, and prebuilt .cjs over .ts). Needed ONLY for the memory READ payload —
@@ -34,28 +34,26 @@ elif [ -f "scripts/jeeves.ts" ]; then
   JEEVES=(npx tsx scripts/jeeves.ts)
 fi
 
-# Both strings MUST stay byte-identical to their originals in session-check.sh — the
-# instructions compaction wiped, restored so capture continues. check-plugin-toolkit-sync.sh
-# asserts this cross-file parity (v4.16.0).
-MEMORY_PROTOCOL='Jeeves memory is active. When the user reveals something DURABLE about how to work with THEM or THIS repo — a stated preference, a correction of your approach, how they want answers/output, or a stable setup/reference fact — capture it SILENTLY (do not narrate, do not ask permission): write memory/<type>_<slug>.md with frontmatter name, description, metadata.type = user|feedback|reference, and created + confirmed dates (today), then add a one-line pointer under the matching section of memory/MEMORY.md. Capture is OPPORTUNISTIC — only cross-session facts about the user/repo, NOT this task code details (those belong in the code KB). Before adding, check MEMORY.md for an existing entry to UPDATE (bump its confirmed date) instead of duplicating. Under-capturing durable prefs is the failure mode; a correction the user repeats twice is a memory.'
-PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
+# Both strings MUST stay byte-identical to their copies in session-check.sh — the capture
+# routing protocol compaction wiped, restored so capture continues. check-plugin-toolkit-sync.sh
+# asserts this cross-file parity (v5.0.0).
+CAPTURE_PROTOCOL='Jeeves is active — capture durable knowledge as a SILENT SIDE EFFECT (do not narrate, do not ask permission, do not break the conversation rhythm), ROUTED BY KIND: (1) a stable fact about how to work with THIS user or repo — a stated preference, a correction of your approach, how they want answers/output, a setup/reference fact -> write memory/<type>_<slug>.md (metadata.type = user|feedback|reference, with created + confirmed dates) + a one-line pointer in memory/MEMORY.md; before adding, check MEMORY.md for an entry to UPDATE (bump confirmed) instead of duplicating. (2) code or architecture knowledge — how a subsystem works, a non-obvious design choice -> the code KB (docs/internal/patterns|decisions), NOT memory. Capture is OPPORTUNISTIC: only cross-session facts, NEVER this task transient details. A correction the user repeats twice is a memory.'
+THINKING_CLAUSE=' (3) This is a decision/brainstorming project: capture every choice landed on (even tentative), idea explored, or open question CONTINUOUSLY (every 3-4 exchanges) -> thinking/decisions|topics/<slug>.md + a row in thinking/INDEX.md. Threshold: anything you would not want to re-derive from scratch next session. Under-capturing is the failure mode; when in doubt, capture.'
 
 CTX=""
-# Memory layer: capture PROTOCOL (wiped) + the unscored READ core (index + user/feedback).
-# No prompt at SessionStart, so prompt-scoring resumes on the next UserPromptSubmit.
-if [ -d "$CWD/memory" ]; then
-  CTX="$MEMORY_PROTOCOL"
-  if [ ${#JEEVES[@]} -gt 0 ]; then
-    MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
-    if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
-      INJ=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
-      [ -n "$INJ" ] && CTX="${INJ} ${CTX}"
-    fi
+# Restore the capture routing protocol (compaction wiped it); append the thinking clause only
+# when thinking/ exists (a pure-code repo must never be told to write thinking/).
+CTX="$CAPTURE_PROTOCOL"
+[ -d "$CWD/thinking" ] && CTX="${CTX}${THINKING_CLAUSE}"
+# Memory READ core (index + user/feedback) if present. No prompt at SessionStart, so
+# prompt-scoring resumes on the next UserPromptSubmit.
+if [ -d "$CWD/memory" ] && [ ${#JEEVES[@]} -gt 0 ]; then
+  MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
+  if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
+    INJ=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
+    [ -n "$INJ" ] && CTX="${INJ} ${CTX}"
   fi
 fi
-# Thinking layer: restore the Layer-1 capture PROTOCOL. A capturing session never nudges, so
-# without this it silently loses its capture instruction for the rest of a compacted session.
-[ -d "$CWD/thinking" ] && CTX="${PROTOCOL}${CTX:+ }${CTX}"
 
 [ -z "$CTX" ] && emit_empty
 CTX="[Jeeves: context re-established after ${SOURCE}] ${CTX}"

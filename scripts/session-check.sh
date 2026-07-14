@@ -94,7 +94,7 @@ if [ "$version_warned" != "1" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
   if [ -n "$inst_ver" ] && [ -n "$avail_ver" ] && [ "$inst_ver" != "$avail_ver" ]; then
     newer=$(printf '%s\n%s\n' "$inst_ver" "$avail_ver" | sort -V 2>/dev/null | tail -1)
     if [ "$newer" = "$avail_ver" ]; then
-      VERSION_MSG="Jeeves ${inst_ver} is running but ${avail_ver} is available — run /plugin update jeeves@jeeves and restart Claude Code to load it."
+      VERSION_MSG="Jeeves ${inst_ver} is running but ${avail_ver} is available — run /plugin update jeeves@jeeves and restart Claude Code to load it. After restarting, run \`jeeves --migrate\` (or /jeeves:migrate) to heal this repo for the new version (memory schema, obsolete skill references, hardcoded paths)."
       version_warned=1
     fi
   fi
@@ -109,13 +109,15 @@ if [ "$bootstrapped" != "1" ]; then
   bootstrapped=1
 fi
 
-PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
-
-# Memory capture protocol (D1) — mirrors thinking-mode Layer 1 (silent side-effect), but
-# capture is OPPORTUNISTIC: memory-worthy events are rare, so there is NO empty-memory gate
-# (most sessions legitimately add nothing). This is the write path — without it memory/ is
-# read-only and never grows (the finance-style capture failure, applied to memory).
-MEMORY_PROTOCOL='Jeeves memory is active. When the user reveals something DURABLE about how to work with THEM or THIS repo — a stated preference, a correction of your approach, how they want answers/output, or a stable setup/reference fact — capture it SILENTLY (do not narrate, do not ask permission): write memory/<type>_<slug>.md with frontmatter name, description, metadata.type = user|feedback|reference, and created + confirmed dates (today), then add a one-line pointer under the matching section of memory/MEMORY.md. Capture is OPPORTUNISTIC — only cross-session facts about the user/repo, NOT this task code details (those belong in the code KB). Before adding, check MEMORY.md for an existing entry to UPDATE (bump its confirmed date) instead of duplicating. Under-capturing durable prefs is the failure mode; a correction the user repeats twice is a memory.'
+# ONE capture protocol with a ROUTING TABLE (v5.0.0) — replaces the two separate protocols
+# (thinking "capture aggressively" + memory "capture rarely") whose adjacency made the thinking
+# aggression bleed into memory, polluting memory/ with task detail in both-mode. Now each kind
+# of knowledge has ONE home, stated once. CAPTURE_PROTOCOL (memory + KB routing) is always
+# injected when Jeeves is active; THINKING_CLAUSE is appended only in brainstorm/both mode so a
+# pure-code repo is never told to write thinking/ (which would flip mode + arm the Stop gate).
+# Keep both strings byte-identical to their copies in session-start.sh (sync-check asserts it).
+CAPTURE_PROTOCOL='Jeeves is active — capture durable knowledge as a SILENT SIDE EFFECT (do not narrate, do not ask permission, do not break the conversation rhythm), ROUTED BY KIND: (1) a stable fact about how to work with THIS user or repo — a stated preference, a correction of your approach, how they want answers/output, a setup/reference fact -> write memory/<type>_<slug>.md (metadata.type = user|feedback|reference, with created + confirmed dates) + a one-line pointer in memory/MEMORY.md; before adding, check MEMORY.md for an entry to UPDATE (bump confirmed) instead of duplicating. (2) code or architecture knowledge — how a subsystem works, a non-obvious design choice -> the code KB (docs/internal/patterns|decisions), NOT memory. Capture is OPPORTUNISTIC: only cross-session facts, NEVER this task transient details. A correction the user repeats twice is a memory.'
+THINKING_CLAUSE=' (3) This is a decision/brainstorming project: capture every choice landed on (even tentative), idea explored, or open question CONTINUOUSLY (every 3-4 exchanges) -> thinking/decisions|topics/<slug>.md + a row in thinking/INDEX.md. Threshold: anything you would not want to re-derive from scratch next session. Under-capturing is the failure mode; when in doubt, capture.'
 
 CC=$("${JEEVES[@]}" "$CWD" --capture-check --session "$SAFE_ID" --prompts "$prompts" --head-last "$head_at_last_check" --since "${since:-0}" --last-commit-prompt "${last_commit_prompt:-0}" --json 2>/dev/null)
 # Sanitize to hex before it can be persisted + later sourced as shell (the value is
@@ -182,13 +184,15 @@ if [ "$memory_injected" != "1" ] && [ -d "$CWD/memory" ]; then
   fi
 fi
 
-# (2) WRITE PROTOCOL (D1): instruct the agent to capture new durable prefs/feedback/reference
-# SILENTLY as they surface. Fires once per session in any Jeeves-active project (has memory/
-# OR a KB → MODE != none), even before memory/ exists, so capture can bootstrap it. Without
-# this, memory/ is read-only and never grows.
-MEMORY_PROTOCOL_MSG=""
+# (2) WRITE PROTOCOL (v5.0.0): the unified capture routing table. Fires once per session in any
+# Jeeves-active project (has memory/ OR a KB → MODE != none), even before memory/ exists, so
+# capture can bootstrap it. The THINKING_CLAUSE is appended only in brainstorm/both mode — a
+# pure-code repo must never be told to write thinking/. Replaces the old separate memory + layer1
+# thinking protocols. `memory_protocol_injected` is the once-per-session latch for the whole thing.
+CAPTURE_MSG=""
 if [ "$memory_protocol_injected" != "1" ] && { [ -d "$CWD/memory" ] || [ "$MODE" != "none" ]; }; then
-  MEMORY_PROTOCOL_MSG="$MEMORY_PROTOCOL"
+  CAPTURE_MSG="$CAPTURE_PROTOCOL"
+  { [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; } && CAPTURE_MSG="${CAPTURE_MSG}${THINKING_CLAUSE}"
   memory_protocol_injected=1
 fi
 
@@ -240,10 +244,9 @@ fi
 
 CTX=""
 if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
-  if [ "$layer1_injected" != "1" ]; then
-    CTX="$PROTOCOL"
-    layer1_injected=1
-  fi
+  # Layer-1 protocol injection is now handled once/session by CAPTURE_MSG (with THINKING_CLAUSE).
+  # This block owns only the escalating nudge (Layer 2), which re-injects the full capture
+  # protocol on each firing (compaction recovery — the ambient protocol may have been wiped).
   if [ "$SHOULD_NUDGE" = "true" ]; then
     nudge_level=$((nudge_level + 1))
     [ "$nudge_level" -gt 3 ] && nudge_level=3
@@ -252,7 +255,7 @@ if [ "$MODE" = "brainstorm" ] || [ "$MODE" = "both" ]; then
       2) MSG="Jeeves: still no thinking/ capture and this session is now ~${prompts} exchanges deep — that is decision-dense territory. Write the locked choices to thinking/decisions/ and update thinking/INDEX.md before continuing.";;
       *) MSG="Jeeves: ~${prompts} exchanges, zero captures. Concretely: review what the user has committed to in this conversation and write each as its own thinking/decisions/<slug>.md now. This is the last gentle reminder before the turn-end gate.";;
     esac
-    CTX="${MSG} ${PROTOCOL}"
+    CTX="${MSG} ${CAPTURE_PROTOCOL}${THINKING_CLAUSE}"
   fi
 else
   nudge_level=0
@@ -289,7 +292,7 @@ FULL_CTX="$CTX"
 # every mode), but behind the version warning. The capture PROTOCOL (write path) leads the
 # memory READ payload so the "capture as you go" instruction is seen first.
 [ -n "$MEMORY_MSG" ] && FULL_CTX="${MEMORY_MSG}${FULL_CTX:+ }${FULL_CTX}"
-[ -n "$MEMORY_PROTOCOL_MSG" ] && FULL_CTX="${MEMORY_PROTOCOL_MSG}${FULL_CTX:+ }${FULL_CTX}"
+[ -n "$CAPTURE_MSG" ] && FULL_CTX="${CAPTURE_MSG}${FULL_CTX:+ }${FULL_CTX}"
 # KB read-loop pointers ride with memory (durable "read this" guidance), ahead of thinking ctx.
 [ -n "$KB_MSG" ] && FULL_CTX="${KB_MSG}${FULL_CTX:+ }${FULL_CTX}"
 # The fresh-repo bootstrap ask rides near the front — it's an explicit question TO the user.

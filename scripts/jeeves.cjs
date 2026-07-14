@@ -1775,42 +1775,54 @@ Append-only chronological record of KB activity. Newest at top.
   }
   if (MODE === "migrate") {
     console.log(`
-\u{1F935} Jeeves \u2014 memory migration
+\u{1F935} Jeeves \u2014 migrate / upgrade heal
 `);
     if (!exists(MEMORY_DIR)) {
-      console.log(`No memory/ directory \u2014 nothing to migrate. Run \`jeeves --init\` to start.
-`);
-      return;
-    }
-    if (!exists(MEMORY_INDEX)) {
+      console.log(`memory/: none \u2014 skipping memory-schema heal.`);
+    } else if (!exists(MEMORY_INDEX)) {
       fs.writeFileSync(MEMORY_INDEX, MEMORY_INDEX_TEMPLATE);
-      console.log(`Scaffolded a fresh memory/MEMORY.md (index was missing).
-`);
+      console.log(`memory/: scaffolded a fresh MEMORY.md (index was missing).`);
     } else {
       const { content, changed, report } = migrateMemoryIndex(read(MEMORY_INDEX));
       if (changed) fs.writeFileSync(MEMORY_INDEX, content);
-      console.log(changed ? `\u2713 Repaired memory/MEMORY.md boilerplate to the current schema (user|feedback|reference). Your entries were left untouched.` : `memory/MEMORY.md already matches the current schema \u2014 no changes.`);
+      console.log(changed ? `memory/: \u2713 repaired MEMORY.md boilerplate to the current schema (your entries untouched).` : `memory/: already current \u2014 no changes.`);
       for (const r of report) console.log(`  \u2022 ${r}`);
-    }
-    const droppedTypeFiles = [];
-    for (const f of fs.readdirSync(MEMORY_DIR).filter((f2) => f2.endsWith(".md") && f2.toLowerCase() !== "memory.md")) {
-      let r = "";
-      try {
-        r = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8");
-      } catch {
-        continue;
+      const droppedTypeFiles = [];
+      for (const f of fs.readdirSync(MEMORY_DIR).filter((f2) => f2.endsWith(".md") && f2.toLowerCase() !== "memory.md")) {
+        let raw = "";
+        try {
+          raw = fs.readFileSync(path.join(MEMORY_DIR, f), "utf-8");
+        } catch {
+          continue;
+        }
+        const t = memoryEntryType(raw);
+        if (t && !["user", "feedback", "reference"].includes(t)) droppedTypeFiles.push(`${f} (type: ${t})`);
       }
-      const t = memoryEntryType(r);
-      if (t && !["user", "feedback", "reference"].includes(t)) droppedTypeFiles.push(`${f} (type: ${t})`);
+      if (droppedTypeFiles.length) {
+        console.log(`  \u26A0 retype to user|feedback|reference (Jeeves won't guess): ${droppedTypeFiles.join(", ")}`);
+      }
     }
-    if (droppedTypeFiles.length) {
-      console.log(`
-\u26A0 ${droppedTypeFiles.length} memory entr${droppedTypeFiles.length === 1 ? "y uses" : "ies use"} a dropped/unknown type \u2014 retype to user|feedback|reference (Jeeves won't guess):`);
-      for (const f of droppedTypeFiles) console.log(`  \u2022 ${f}`);
-    } else {
-      console.log(`
-All memory entries use valid types.`);
+    console.log("");
+    const REMOVED_SKILLS = "annotate|verify|design|reconcile|driftcheck|save|extract|summary|export|trace";
+    const skillRefs = runGit(["grep", "-nIE", `/jeeves:(${REMOVED_SKILLS})`]).split("\n").filter(Boolean);
+    const pathPins = runGit(["grep", "-nIE", "plugins/cache/jeeves/"]).split("\n").filter(Boolean);
+    const vendored = ["scripts/jeeves.ts", "scripts/jeeves.cjs", ".claude/hooks/session-check.sh", ".claude/hooks/thinking-capture-gate.sh", ".claude/hooks/session-start.sh"].filter((p) => exists(path.join(ROOT, p)));
+    let healClean = true;
+    if (skillRefs.length) {
+      healClean = false;
+      console.log(`\u26A0 ${skillRefs.length} reference(s) to REMOVED skills (v5.0.0) \u2014 replace: annotate/verify/design \u2192 /jeeves:harden; reconcile/driftcheck \u2192 /jeeves:drift; save/extract/summary/export/trace \u2192 the /jeeves flow or engine --flag:`);
+      for (const l of skillRefs.slice(0, 15)) console.log(`  \u2022 ${l}`);
     }
+    if (pathPins.length) {
+      healClean = false;
+      console.log(`\u26A0 ${pathPins.length} hardcoded plugin-cache path(s) (break on upgrade) \u2014 replace with /jeeves:* skills or the jeeves_* MCP tools (never a versioned cache path):`);
+      for (const l of pathPins.slice(0, 15)) console.log(`  \u2022 ${l}`);
+    }
+    if (vendored.length) {
+      healClean = false;
+      console.log(`\u26A0 stale VENDORED Jeeves copies (the installed plugin is canonical \u2014 these run old logic; remove them): ${vendored.join(", ")}`);
+    }
+    if (healClean) console.log(`No obsolete Jeeves references found \u2014 repo is clean for this version.`);
     console.log("");
     return;
   }
