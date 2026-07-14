@@ -172,6 +172,12 @@ if [ "$memory_injected" != "1" ] && [ -d "$CWD/memory" ]; then
     memory_injected=1
     if [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
       MEMORY_MSG=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
+      # Value ledger (v4.18.0): record that memory was RECALLED (surfaced) this session, so
+      # `jeeves --report` can show the durable value Jeeves is providing. Local, no network.
+      if [ -n "$MEMORY_MSG" ]; then
+        _mc=$(printf '%s' "$MC" | jq -r '.count // 0' 2>/dev/null)
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) recall kind=memory project=$(basename "$CWD") count=${_mc:-0}" >> "$USAGE_LOG" 2>/dev/null || true
+      fi
     fi
   fi
 fi
@@ -223,7 +229,12 @@ if [ "$MODE" = "code" ] || [ "$MODE" = "both" ]; then
     done <<KBEOF
 $(printf '%s' "$KB" | jq -r '.pointers[]? // empty' 2>/dev/null)
 KBEOF
-    [ -n "$NEWPTRS" ] && KB_MSG="${KB_MSG:+$KB_MSG }Relevant KB (read before working on this): ${NEWPTRS}"
+    if [ -n "$NEWPTRS" ]; then
+      KB_MSG="${KB_MSG:+$KB_MSG }Relevant KB (read before working on this): ${NEWPTRS}"
+      # Value ledger (v4.18.0): count KB docs recalled (surfaced) this prompt.
+      _kbn=$(printf '%s' "$NEWPTRS" | awk -F'; ' '{print NF}')
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) recall kind=kb project=$(basename "$CWD") count=${_kbn:-1}" >> "$USAGE_LOG" 2>/dev/null || true
+    fi
   fi
 fi
 

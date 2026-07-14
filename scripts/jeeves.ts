@@ -41,7 +41,7 @@ const ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check"] as const;
+const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"] as const;
 const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
 const JSON_OUT = process.argv.includes("--json");
 function argVal(flag: string): string | undefined {
@@ -1205,7 +1205,7 @@ function main() {
   // Hot-path modes run on EVERY user prompt (session-check) / turn-end (Stop gate)
   // under a tight hook timeout and never read `git` — skip the 6 git subprocesses
   // getGitChanges() spawns. (Verified: these blocks contain no `git.` references.)
-  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check"]);
+  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report"]);
   const git: GitChanges = GITLESS_MODES.has(MODE)
     ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] }
     : getGitChanges();
@@ -2484,6 +2484,44 @@ Append-only chronological record of KB activity. Newest at top.
     const pointers = scored.map(x => `${x.d.path} — ${x.d.title}`);
     const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
     process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
+    return;
+  }
+
+  if (MODE === "report") {
+    // Value ledger (v4.18.0): the honest replacement for the un-backed "weekly digest" promise.
+    // Reads the LOCAL usage log (no network) — session_start + recall events written by the
+    // session hook — and summarizes the knowledge Jeeves has surfaced (memory + KB docs) that
+    // you'd otherwise have re-derived. Measures SURFACING, not proven recall — stated honestly.
+    const logPath = process.env.JEEVES_USAGE_LOG || path.join(process.env.HOME || "", ".jeeves-usage.log");
+    if (!exists(logPath)) {
+      if (JSON_OUT) { process.stdout.write(JSON.stringify({ present: false, logPath })); return; }
+      console.log(`\n🤵 Jeeves — value report\n\nNo usage log yet (${logPath}). Use Jeeves for a few sessions and check back.\n`);
+      return;
+    }
+    const lines = read(logPath).split("\n").filter(Boolean);
+    const DAY = 86400000, now = Date.now();
+    let sessions = 0, memEvents = 0, memCount = 0, kbEvents = 0, kbCount = 0;
+    let sessions30 = 0, memCount30 = 0, kbCount30 = 0;
+    const projects = new Set<string>();
+    const num = (ln: string) => { const m = ln.match(/count=(\d+)/); return m ? parseInt(m[1], 10) : 0; };
+    for (const ln of lines) {
+      const ts = Date.parse((ln.match(/^(\S+) /) || [])[1] || "");
+      const recent = !isNaN(ts) && (now - ts) <= 30 * DAY;
+      const pm = ln.match(/project=(\S+)/); if (pm) projects.add(pm[1]);
+      if (/ session_start /.test(ln)) { sessions++; if (recent) sessions30++; }
+      else if (/ recall kind=memory /.test(ln)) { memEvents++; memCount += num(ln); if (recent) memCount30 += num(ln); }
+      else if (/ recall kind=kb /.test(ln)) { kbEvents++; kbCount += num(ln); if (recent) kbCount30 += num(ln); }
+    }
+    if (JSON_OUT) {
+      process.stdout.write(JSON.stringify({ present: true, sessions, projects: projects.size, memEvents, memCount, kbEvents, kbCount, last30: { sessions: sessions30, memCount: memCount30, kbCount: kbCount30 } }));
+      return;
+    }
+    console.log(`\n🤵 Jeeves — value report\n`);
+    console.log(`All time: ${sessions} session(s) across ${projects.size} project(s).`);
+    console.log(`  • Memory recalled in ${memEvents} session(s) — ${memCount} entr${memCount === 1 ? "y" : "ies"} surfaced.`);
+    console.log(`  • KB docs surfaced: ${kbCount} (across ${kbEvents} prompt${kbEvents === 1 ? "" : "s"}).`);
+    console.log(`\nLast 30 days: ${sessions30} session(s); ${memCount30} memory + ${kbCount30} KB item(s) put in front of you`);
+    console.log(`— knowledge you'd otherwise have re-derived. (Surfacing count; local only.)\n`);
     return;
   }
 

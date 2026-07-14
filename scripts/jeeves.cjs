@@ -32,7 +32,7 @@ var ROOT = (() => {
   if (absPositional) return absPositional;
   return process.cwd();
 })();
-var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check"];
+var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"];
 var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
 var JSON_OUT = process.argv.includes("--json");
 function argVal(flag) {
@@ -808,7 +808,7 @@ ${actions.map((a) => `- [${a.priority}] ${a.type}: ${a.description}`).join("\n")
 }
 function main() {
   const state = detectState();
-  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check"]);
+  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report"]);
   const git = GITLESS_MODES.has(MODE) ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] } : getGitChanges();
   if (MODE === "research") {
     const topic = process.argv.slice(process.argv.indexOf("--research") + 1).filter((a) => !a.startsWith("-")).join(" ") || "untitled";
@@ -1961,6 +1961,63 @@ ${idx}` : "",
     const pointers = scored.map((x) => `${x.d.path} \u2014 ${x.d.title}`);
     const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
     process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
+    return;
+  }
+  if (MODE === "report") {
+    const logPath = process.env.JEEVES_USAGE_LOG || path.join(process.env.HOME || "", ".jeeves-usage.log");
+    if (!exists(logPath)) {
+      if (JSON_OUT) {
+        process.stdout.write(JSON.stringify({ present: false, logPath }));
+        return;
+      }
+      console.log(`
+\u{1F935} Jeeves \u2014 value report
+
+No usage log yet (${logPath}). Use Jeeves for a few sessions and check back.
+`);
+      return;
+    }
+    const lines = read(logPath).split("\n").filter(Boolean);
+    const DAY = 864e5, now = Date.now();
+    let sessions = 0, memEvents = 0, memCount = 0, kbEvents = 0, kbCount = 0;
+    let sessions30 = 0, memCount30 = 0, kbCount30 = 0;
+    const projects = /* @__PURE__ */ new Set();
+    const num = (ln) => {
+      const m = ln.match(/count=(\d+)/);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    for (const ln of lines) {
+      const ts = Date.parse((ln.match(/^(\S+) /) || [])[1] || "");
+      const recent = !isNaN(ts) && now - ts <= 30 * DAY;
+      const pm = ln.match(/project=(\S+)/);
+      if (pm) projects.add(pm[1]);
+      if (/ session_start /.test(ln)) {
+        sessions++;
+        if (recent) sessions30++;
+      } else if (/ recall kind=memory /.test(ln)) {
+        memEvents++;
+        memCount += num(ln);
+        if (recent) memCount30 += num(ln);
+      } else if (/ recall kind=kb /.test(ln)) {
+        kbEvents++;
+        kbCount += num(ln);
+        if (recent) kbCount30 += num(ln);
+      }
+    }
+    if (JSON_OUT) {
+      process.stdout.write(JSON.stringify({ present: true, sessions, projects: projects.size, memEvents, memCount, kbEvents, kbCount, last30: { sessions: sessions30, memCount: memCount30, kbCount: kbCount30 } }));
+      return;
+    }
+    console.log(`
+\u{1F935} Jeeves \u2014 value report
+`);
+    console.log(`All time: ${sessions} session(s) across ${projects.size} project(s).`);
+    console.log(`  \u2022 Memory recalled in ${memEvents} session(s) \u2014 ${memCount} entr${memCount === 1 ? "y" : "ies"} surfaced.`);
+    console.log(`  \u2022 KB docs surfaced: ${kbCount} (across ${kbEvents} prompt${kbEvents === 1 ? "" : "s"}).`);
+    console.log(`
+Last 30 days: ${sessions30} session(s); ${memCount30} memory + ${kbCount30} KB item(s) put in front of you`);
+    console.log(`\u2014 knowledge you'd otherwise have re-derived. (Surfacing count; local only.)
+`);
     return;
   }
   if (MODE === "bootstrap-thinking") {
