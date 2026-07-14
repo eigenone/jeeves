@@ -12,8 +12,11 @@ printf '%s' "$COMMAND" | grep -Eq '(^|[;&|[:space:]])git([[:space:]]+-[^[:space:
 
 # Skip if the push itself failed — otherwise we'd persist the current action set as
 # "seen" and never surface it after the user fixes the push and retries.
-TOOL_OK=$(printf '%s' "$INPUT" | jq -r '(.tool_response.success // .tool_response.exit_code // empty)' 2>/dev/null)
-case "$TOOL_OK" in false|[1-9]*) echo '{}'; exit 0 ;; esac
+# NOTE (v4.16.0): compute fail/ok in jq, NOT via `//` — jq's `//` treats `false` as ABSENT,
+# so `success:false` fell through to exit_code, then to empty, and the skip never matched → a
+# FAILED push was recorded as seen (the exact bug this guard's comment claims to prevent).
+TOOL_STATUS=$(printf '%s' "$INPUT" | jq -r 'if (.tool_response.success == false) or ((.tool_response.exit_code // 0) != 0) then "fail" else "ok" end' 2>/dev/null)
+[ "$TOOL_STATUS" = "fail" ] && { echo '{}'; exit 0; }
 
 # Run from the session's project root if the hook provided one (parity with
 # session-check) — a subdir session would otherwise analyze the wrong root, and the
@@ -50,7 +53,7 @@ CUR_SIGS=$(printf '%s' "$JSON" | jq -r '.actions[]? | "\(.type)|\(.target)|\(.pr
 # A SYSTEM-MAP action accumulates multiple docs into one action with a stable
 # aggregate signature; individual new docs would be invisible without this expansion.
 UNINDEXED_SIGS=$(printf '%s' "$JSON" | jq -r '
-  .actions[]? | select(.target | endswith("SYSTEM-MAP.md"))
+  .actions[]? | select((.target | endswith("SYSTEM-MAP.md")) and (.description | test("unindexed doc")))
   | .description | ltrimstr("Add ") | split(": ") | last | split(", ")[]
   | "unindexed|\(.)|medium"' 2>/dev/null || true)
 

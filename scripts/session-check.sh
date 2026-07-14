@@ -145,8 +145,11 @@ CAPTURED=$(printf '%s' "$CC" | jq -r '.captured // false' 2>/dev/null)
 # the message and tracks the once-per-session marker.
 SHOULD_OFFER_REG=$(printf '%s' "$CC" | jq -r '.shouldOfferRegistration // false' 2>/dev/null)
 CAPTURE_COUNT=$(printf '%s' "$CC" | jq -r '.captureCount // 0' 2>/dev/null)
+# The signup nudge is GATED OFF by default (v4.16.0): trustjeeves.com is not yet a live
+# funnel, and shipping a nudge to an unregistered domain is a squat/credibility risk. It only
+# emits when JEEVES_SIGNUP=1 is explicitly set. Re-enable once the domain + funnel exist.
 REGISTRATION_MSG=""
-if [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
+if [ "${JEEVES_SIGNUP:-}" = "1" ] && [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
   REGISTRATION_MSG="Jeeves has captured ${CAPTURE_COUNT} decisions for you. Sign up at trustjeeves.com (just an email) — you will get a weekly digest of your decisions, and early access to cross-project search and cross-machine sync as they ship. Already have a key? Run /jeeves:activate <key>."
   signup_nudged=1
 fi
@@ -216,7 +219,11 @@ else
   nudge_level=0
 fi
 
-# --- persist state (best effort) ---
+# --- persist state (best effort, ATOMIC) ---
+# Write to a temp file then rename (v4.16.0): a plain `>` redirect can be observed
+# half-written by a concurrent Stop-gate read (which parses a truncated file as zeros,
+# resetting block_count/prompts). rename(2) is atomic on the same filesystem.
+_STATE_TMP="${STATE}.tmp.$$"
 {
   echo "prompts=$prompts"
   echo "nudge_level=$nudge_level"
@@ -232,7 +239,7 @@ fi
   echo "memory_injected=$memory_injected"
   echo "memory_protocol_injected=$memory_protocol_injected"
   echo "kb_offered=$kb_offered"
-} > "$STATE" 2>/dev/null || true
+} > "$_STATE_TMP" 2>/dev/null && mv "$_STATE_TMP" "$STATE" 2>/dev/null || rm -f "$_STATE_TMP" 2>/dev/null || true
 
 # Version warning rides in front of any thinking-mode context, and emits on its
 # own even in code-mode projects (where CTX is empty).

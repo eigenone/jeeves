@@ -45,6 +45,7 @@ var SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
 var LOG_FILE = path.join(DOCS_DIR, "log.md");
 var PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 var DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
+var CODE_FILTER = "grep -vE '^(docs/|thinking/|\\.claude/|README|LICENSE|CHANGELOG|package\\.json|package-lock\\.json|pnpm-lock|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
 var MEMORY_DIR = path.join(ROOT, "memory");
 var MEMORY_INDEX = path.join(MEMORY_DIR, "MEMORY.md");
 var MEMORY_INDEX_PREAMBLE = `# Memory Index
@@ -144,12 +145,17 @@ function runFile(cmd, args, opts) {
       timeout: opts?.timeout || 1e4,
       stdio: ["pipe", "pipe", "pipe"]
     }).trim();
-  } catch {
-    return "";
+  } catch (e) {
+    return (e && e.stdout ? String(e.stdout) : "").trim();
   }
 }
 function runGit(args, opts) {
   return runFile("git", args, opts);
+}
+var _gitPrefix = null;
+function gitPrefix() {
+  if (_gitPrefix === null) _gitPrefix = (runGit(["rev-parse", "--show-prefix"]) || "").trim();
+  return _gitPrefix;
 }
 var _commitTimeCache = /* @__PURE__ */ new Map();
 function gitCommitTime(relFile) {
@@ -273,16 +279,16 @@ function getDocumentedEntities() {
 function getGitChanges() {
   const lastDocCommit = run("git log --format='%H' -1 -- docs/internal/");
   const lastDocDate = run("git log --format='%ai' -1 -- docs/internal/");
-  const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|README|LICENSE|CHANGELOG|package\\.json|package-lock\\.json|pnpm-lock|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
+  const codeFilter = CODE_FILTER;
   let changedCodeFiles = [];
   let newCodeFiles = [];
   let deletedCodeFiles = [];
   if (lastDocCommit) {
-    const changed = run(`git -c core.quotepath=off diff --name-only --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const changed = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     changedCodeFiles = changed ? changed.split("\n") : [];
-    const added = run(`git -c core.quotepath=off diff --name-only --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const added = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     newCodeFiles = added ? added.split("\n") : [];
-    const deleted = run(`git -c core.quotepath=off diff --name-only --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const deleted = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     deletedCodeFiles = deleted ? deleted.split("\n") : [];
   }
   const msgs = run("git log --format='%s' -10");
@@ -290,6 +296,7 @@ function getGitChanges() {
   return { lastDocCommit, lastDocDate, changedCodeFiles, newCodeFiles, deletedCodeFiles, recentCommitMessages };
 }
 function parseFrontmatter(content) {
+  content = content.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
   if (!content.startsWith("---\n")) return {};
   const rest = content.slice(4);
   const endIdx = rest.indexOf("\n---\n");
@@ -644,8 +651,9 @@ function generateActions(state, git) {
       const verified = runGit(["rev-parse", "--verify", `${fm.verifiedAt}^{commit}`]);
       if (verified) anchorSha = verified;
     }
+    const _pfx = gitPrefix();
     const docCommitFiles = new Set(
-      (runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", docLastCommitSha]) || "").split("\n").filter(Boolean)
+      (runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", "--root", docLastCommitSha]) || "").split("\n").filter(Boolean).map((f) => _pfx && f.startsWith(_pfx) ? f.slice(_pfx.length) : f)
     );
     const docText = read(path.join(ROOT, docRelPath));
     const staleRefs = [];
@@ -664,7 +672,7 @@ function generateActions(state, git) {
             return "";
           }
         })();
-        const anchorSrc = runGit(["show", `${anchorSha}:${ref}`]);
+        const anchorSrc = runGit(["show", `${anchorSha}:${_pfx}${ref}`]);
         const headEx = extractor(headSrc);
         const anchorEx = extractor(anchorSrc);
         if (!headEx.opaque && !anchorEx.opaque) {
@@ -1134,21 +1142,6 @@ Agent: Tell the user the export is ready. They can share this file with their te
         }
       }
     }
-    if (exists(PATTERNS_DIR)) {
-      for (const f of fs.readdirSync(PATTERNS_DIR).filter((f2) => f2.endsWith(".md"))) {
-        const fullPath = path.join(PATTERNS_DIR, f);
-        const mtime = fs.statSync(fullPath).mtimeMs;
-        const ageInDays = (Date.now() - mtime) / (1e3 * 60 * 60 * 24);
-        if (ageInDays > 14) {
-          driftItems.push({
-            file: `docs/internal/patterns/${f}`,
-            type: "pattern",
-            severity: "outdated",
-            issue: `Not updated in ${Math.floor(ageInDays)} days \u2014 may be stale`
-          });
-        }
-      }
-    }
     const docFileRefs = /* @__PURE__ */ new Map();
     const allReconcileDocs = getAllMdFiles(DOCS_DIR);
     for (const docPath of allReconcileDocs) {
@@ -1425,7 +1418,7 @@ Agent: Trace "${feature}" end-to-end through the codebase.`);
       ...exists(path.join(DOCS_DIR, "decisions")) ? fs.readdirSync(path.join(DOCS_DIR, "decisions")).filter((f) => f.endsWith(".md")).map((f) => f.replace(".md", "")) : [],
       ...exists(path.join(THINKING_DIR, "decisions")) ? fs.readdirSync(path.join(THINKING_DIR, "decisions")).filter((f) => f.endsWith(".md")).map((f) => f.replace(".md", "")) : []
     ];
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
     const codeDirs = /* @__PURE__ */ new Map();
@@ -1563,7 +1556,7 @@ You're starting fresh. All topics, sessions, and decisions are archived.
   }
   if (MODE === "annotate") {
     console.log("\n\u{1F935} Jeeves \u2014 Annotate Code\n");
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
     const targets = [];
@@ -1610,7 +1603,7 @@ You're starting fresh. All topics, sessions, and decisions are archived.
   }
   if (MODE === "verify") {
     console.log("\n\u{1F935} Jeeves \u2014 Verify Comments\n");
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
     const commentsToVerify = [];
@@ -1997,7 +1990,7 @@ ${idx}` : "",
     const REGISTRATION_CAPTURE_THRESHOLD = 2;
     let captureCount = 0;
     if (exists(THINKING_DIR)) {
-      for (const d of ["decisions", "topics", "sessions"]) {
+      for (const d of ["decisions", "topics"]) {
         const dir = path.join(THINKING_DIR, d);
         if (!exists(dir)) continue;
         try {
@@ -2024,7 +2017,7 @@ ${idx}` : "",
     const headChanged = !!(head && headLast && head !== headLast);
     const recentGitCommit = lastCommitPrompt > 0 && prompts - lastCommitPrompt < GIT_DEFER_WINDOW;
     const sessionHasSubstance = prompts >= SUBSTANCE_THRESHOLD;
-    const deferForGit = state2.mode === "both" && recentGitCommit;
+    const deferForGit = state2.mode === "both" && (recentGitCommit || headChanged);
     const firstNudgeAt = Math.ceil(SUBSTANCE_THRESHOLD / NUDGE_INTERVAL) * NUDGE_INTERVAL;
     const shouldBlock = isThinking && prompts >= firstNudgeAt && !captured && !deferForGit;
     const shouldNudge = isThinking && prompts > 0 && prompts % NUDGE_INTERVAL === 0 && !captured && !deferForGit && sessionHasSubstance;

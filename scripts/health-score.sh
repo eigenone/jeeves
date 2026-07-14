@@ -315,17 +315,29 @@ if [ -n "$LINT_SCRIPT" ]; then
   echo "  ✓ Lint available"
   LINT_SCORE=$((LINT_SCORE + 5))
 
-  # Pass $ROOT explicitly (lint-docs reads argv[2] as project root).
-  LINT_OUTPUT=$(npx tsx "$LINT_SCRIPT" "$ROOT" 2>&1)
-  LINT_EXIT=$?
-
-  if [ $LINT_EXIT -eq 0 ]; then
-    echo "  ✓ Lint passes cleanly"
-    LINT_SCORE=$((LINT_SCORE + 10))
+  # Probe the runner first (v4.16.0): lint-docs fails OPEN (exit 0) on its own internal errors,
+  # so a non-zero exit means real findings ONLY if the runner actually ran. If tsx can't run
+  # (offline / absent), don't score the repo as doc-rot — that's a toolchain issue, not the
+  # docs' fault (previously a broken runner scored 2/15, so the same repo scored differently
+  # offline). Mirrors pre-push-gate's fail-open toolchain handling.
+  if command -v tsx >/dev/null 2>&1; then TSX="tsx"
+  elif [ -x "$ROOT/node_modules/.bin/tsx" ]; then TSX="$ROOT/node_modules/.bin/tsx"
+  else TSX="npx --no-install tsx"; fi
+  if ! $TSX --version >/dev/null 2>&1; then
+    echo "  • Lint runner unavailable (toolchain) — not scored as doc issues"
+    LINT_SCORE=$((LINT_SCORE + 8))
   else
-    LINT_ERRORS=$(echo "$LINT_OUTPUT" | grep -c "✗\|FAIL\|ERROR" 2>/dev/null); LINT_ERRORS=${LINT_ERRORS:-0}
-    echo "  ✗ Lint has errors ($LINT_ERRORS issues)"
-    LINT_SCORE=$((LINT_SCORE + 2))
+    # Pass $ROOT explicitly (lint-docs reads argv[2] as project root).
+    LINT_OUTPUT=$($TSX "$LINT_SCRIPT" "$ROOT" 2>&1)
+    LINT_EXIT=$?
+    if [ $LINT_EXIT -eq 0 ]; then
+      echo "  ✓ Lint passes cleanly"
+      LINT_SCORE=$((LINT_SCORE + 10))
+    else
+      LINT_ERRORS=$(echo "$LINT_OUTPUT" | grep -c "✗\|FAIL\|ERROR" 2>/dev/null); LINT_ERRORS=${LINT_ERRORS:-0}
+      echo "  ✗ Lint has errors ($LINT_ERRORS issues)"
+      LINT_SCORE=$((LINT_SCORE + 2))
+    fi
   fi
 elif [ -f "$ROOT/scripts/heal-docs.ts" ] || [ -f "$SELF_DIR/heal-docs.ts" ] || { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/heal-docs.ts" ]; }; then
   echo "  ✓ Heal script available (no separate lint)"

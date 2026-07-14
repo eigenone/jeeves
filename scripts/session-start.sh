@@ -17,11 +17,13 @@ case "$SOURCE" in compact|resume) ;; *) emit_empty ;; esac
 
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
-# Nothing to re-inject if there's no memory/ store at all.
-[ -d "$CWD/memory" ] || emit_empty
+# Nothing to re-inject unless this project uses memory/ and/or thinking/.
+[ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || emit_empty
 
-# Resolve the engine (identical contract to session-check.sh: prefer the plugin copy over a
-# stale project-local one, and the prebuilt .cjs over .ts). Array form is space-safe.
+# Resolve the engine (same contract as session-check.sh: prefer the plugin copy over a stale
+# project-local one, and prebuilt .cjs over .ts). Needed ONLY for the memory READ payload —
+# both protocols are static strings — so a missing engine is NON-fatal here (leave JEEVES empty).
+JEEVES=()
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
   JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.ts" ]; then
@@ -30,24 +32,33 @@ elif [ -f "scripts/jeeves.cjs" ]; then
   JEEVES=(node scripts/jeeves.cjs)
 elif [ -f "scripts/jeeves.ts" ]; then
   JEEVES=(npx tsx scripts/jeeves.ts)
-else
-  emit_empty
 fi
 
-# Keep this string byte-identical to MEMORY_PROTOCOL in session-check.sh (sync-check asserts
-# it) — the capture instruction the compaction wiped, restored so capture continues.
+# Both strings MUST stay byte-identical to their originals in session-check.sh — the
+# instructions compaction wiped, restored so capture continues. check-plugin-toolkit-sync.sh
+# asserts this cross-file parity (v4.16.0).
 MEMORY_PROTOCOL='Jeeves memory is active. When the user reveals something DURABLE about how to work with THEM or THIS repo — a stated preference, a correction of your approach, how they want answers/output, or a stable setup/reference fact — capture it SILENTLY (do not narrate, do not ask permission): write memory/<type>_<slug>.md with frontmatter name, description, metadata.type = user|feedback|reference, and created + confirmed dates (today), then add a one-line pointer under the matching section of memory/MEMORY.md. Capture is OPPORTUNISTIC — only cross-session facts about the user/repo, NOT this task code details (those belong in the code KB). Before adding, check MEMORY.md for an existing entry to UPDATE (bump its confirmed date) instead of duplicating. Under-capturing durable prefs is the failure mode; a correction the user repeats twice is a memory.'
+PROTOCOL='Jeeves thinking-mode is active. This is a decision/brainstorming project. Capture knowledge to thinking/ as a SILENT SIDE EFFECT — do not narrate the writes, do not ask permission, do not break the conversation rhythm. The user conversational instructions govern the conversation, not whether files get written between turns. Capture continuously (every 3-4 exchanges): a choice the user lands on even tentatively -> thinking/decisions/<slug>.md + a row in thinking/INDEX.md; an idea explored but not chosen -> thinking/topics/<slug>.md; a question left open -> thinking/INDEX.md Open Questions; an idea rejected with reasoning -> the topic file under Rejected. Threshold for a decision: anything you would not want to re-derive from scratch next session. When in doubt, capture it. Under-capturing is the failure mode here, not over-capturing.'
 
-# Re-inject: the capture PROTOCOL always (it was wiped), plus the memory READ core when the
-# store has recognized entries. No prompt is available at SessionStart, so the read is the
-# unscored core (index + user/feedback) — prompt-scoring resumes on the next UserPromptSubmit.
-MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
-CTX="$MEMORY_PROTOCOL"
-if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
-  INJ=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
-  [ -n "$INJ" ] && CTX="${INJ} ${CTX}"
+CTX=""
+# Memory layer: capture PROTOCOL (wiped) + the unscored READ core (index + user/feedback).
+# No prompt at SessionStart, so prompt-scoring resumes on the next UserPromptSubmit.
+if [ -d "$CWD/memory" ]; then
+  CTX="$MEMORY_PROTOCOL"
+  if [ ${#JEEVES[@]} -gt 0 ]; then
+    MC=$("${JEEVES[@]}" "$CWD" --memory-check --json 2>/dev/null)
+    if printf '%s' "$MC" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$MC" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
+      INJ=$(printf '%s' "$MC" | jq -r '.inject // empty' 2>/dev/null)
+      [ -n "$INJ" ] && CTX="${INJ} ${CTX}"
+    fi
+  fi
 fi
-CTX="[Jeeves: memory re-established after ${SOURCE}] ${CTX}"
+# Thinking layer: restore the Layer-1 capture PROTOCOL. A capturing session never nudges, so
+# without this it silently loses its capture instruction for the rest of a compacted session.
+[ -d "$CWD/thinking" ] && CTX="${PROTOCOL}${CTX:+ }${CTX}"
+
+[ -z "$CTX" ] && emit_empty
+CTX="[Jeeves: context re-established after ${SOURCE}] ${CTX}"
 
 # jq -Rsc correctly escapes arbitrary content (user-authored memory markdown may contain
 # tabs/control chars). Fail OPEN if jq can't produce output.

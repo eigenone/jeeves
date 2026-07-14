@@ -54,6 +54,12 @@ const SYSTEM_MAP = path.join(DOCS_DIR, "SYSTEM-MAP.md");
 const LOG_FILE = path.join(DOCS_DIR, "log.md");
 const PATTERNS_DIR = path.join(DOCS_DIR, "patterns");
 const DECISIONS_DIR = path.join(DOCS_DIR, "decisions");
+// Single source of truth for "which files are code" (v4.16.0 — was copy-pasted 4× and 3 copies
+// were monorepo-BLIND: a bare `package` alternative excluded the whole `packages/` tree, and a
+// bare `\.` excluded every dotdir incl. `.github/workflows/*.ts`). Exclude only SPECIFIC lock/
+// manifest files, keep dotdirs. Used by getGitChanges (diff output) + design/annotate/verify
+// (ls-files) — same path format, so one filter serves both.
+const CODE_FILTER = "grep -vE '^(docs/|thinking/|\\.claude/|README|LICENSE|CHANGELOG|package\\.json|package-lock\\.json|pnpm-lock|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
 // Memory layer — the "how to work with THIS user/repo" collaboration layer (prefs,
 // feedback, reference), distinct from the code KB. Repo-root memory/, hook-injected.
 const MEMORY_DIR = path.join(ROOT, "memory");
@@ -178,12 +184,27 @@ function runFile(cmd: string, args: string[], opts?: { timeout?: number }): stri
       timeout: opts?.timeout || 10000,
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
-  } catch {
-    return "";
+  } catch (e: any) {
+    // On a non-zero exit, still surface whatever the tool printed to STDOUT (v4.16.0):
+    // heal-docs --fix applies edits then exits 1 when unfixable refs remain, and the report
+    // rides on stdout — swallowing it meant sync silently rewrote user docs with no output.
+    // git & friends write errors to STDERR (stdout empty here), so those still yield "".
+    return ((e && e.stdout) ? String(e.stdout) : "").trim();
   }
 }
 function runGit(args: string[], opts?: { timeout?: number }): string {
   return runFile("git", args, opts);
+}
+
+// Path prefix from the git repo root to ROOT — e.g. "apps/web/" when Claude opened a monorepo
+// sub-package, "" when ROOT is the repo root. Memoized (one spawn, only when a path-frame
+// consumer needs it — never in gitless hot-path modes). git plumbing that lists files
+// (diff-tree, `show <rev>:<path>`) is REPO-root-relative while our refs are ROOT-relative;
+// this bridges the two so staleness works when ROOT is a sub-directory of the repo (v4.16.0).
+let _gitPrefix: string | null = null;
+function gitPrefix(): string {
+  if (_gitPrefix === null) _gitPrefix = (runGit(["rev-parse", "--show-prefix"]) || "").trim();
+  return _gitPrefix;
 }
 
 // Last-commit time (epoch seconds) for a repo-relative file, memoized. 0 = not
@@ -362,20 +383,20 @@ function getGitChanges(): GitChanges {
   // `package` alternative also excluded the entire `packages/` tree, making Jeeves
   // blind to every pnpm/turbo monorepo. `\.claude/` covers our own dotdir; keep the
   // dotfile exclusion narrow so real code like `.github/workflows/*.ts` isn't dropped.
-  const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|README|LICENSE|CHANGELOG|package\\.json|package-lock\\.json|pnpm-lock|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs|prisma|sql)$'";
+  const codeFilter = CODE_FILTER;
 
   let changedCodeFiles: string[] = [];
   let newCodeFiles: string[] = [];
   let deletedCodeFiles: string[] = [];
 
   if (lastDocCommit) {
-    const changed = run(`git -c core.quotepath=off diff --name-only --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const changed = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=M ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     changedCodeFiles = changed ? changed.split("\n") : [];
 
-    const added = run(`git -c core.quotepath=off diff --name-only --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const added = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=A ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     newCodeFiles = added ? added.split("\n") : [];
 
-    const deleted = run(`git -c core.quotepath=off diff --name-only --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
+    const deleted = run(`git -c core.quotepath=off diff --name-only --relative --diff-filter=D ${lastDocCommit}..HEAD 2>/dev/null | ${codeFilter}`);
     deletedCodeFiles = deleted ? deleted.split("\n") : [];
   }
 
@@ -398,6 +419,10 @@ type DocFrontmatter = {
 };
 
 function parseFrontmatter(content: string): DocFrontmatter {
+  // Normalize BOM + CRLF first (v4.16.0) — a CRLF/BOM'd doc otherwise fails the `---\n` match,
+  // so its status:archived / superseded-by / verified-at opt-outs were silently ignored (and
+  // heal vs stale disagreed on the same file). Matches the memory/heal/content-lint parsers.
+  content = content.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
   if (!content.startsWith("---\n")) return {};
   const rest = content.slice(4);
   const endIdx = rest.indexOf("\n---\n");
@@ -957,10 +982,14 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
     // `git show --name-only`: on a MERGE commit, show prints only the combined-diff
     // conflicted paths (often none), so the doc would lose fresh-together suppression
     // and generate spurious stale flags.
+    // --root so a parentless (initial) commit still lists its files; strip the repo→ROOT
+    // prefix so these repo-relative paths compare against ROOT-relative refs below.
+    const _pfx = gitPrefix();
     const docCommitFiles = new Set(
-      (runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", docLastCommitSha]) || "")
+      (runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", "--root", docLastCommitSha]) || "")
         .split("\n")
         .filter(Boolean)
+        .map(f => _pfx && f.startsWith(_pfx) ? f.slice(_pfx.length) : f)
     );
 
     const docText = read(path.join(ROOT, docRelPath));
@@ -982,7 +1011,7 @@ function generateActions(state: ProjectState, git: GitChanges): Action[] {
       const extractor = surfaceExtractorFor(ref);
       if (extractor) {
         const headSrc = (() => { try { return fs.readFileSync(path.join(ROOT, ref), "utf-8"); } catch { return ""; } })();
-        const anchorSrc = runGit(["show", `${anchorSha}:${ref}`]);
+        const anchorSrc = runGit(["show", `${anchorSha}:${_pfx}${ref}`]); // repo-relative path
         const headEx = extractor(headSrc);
         const anchorEx = extractor(anchorSrc);
         if (!headEx.opaque && !anchorEx.opaque) {
@@ -1541,20 +1570,11 @@ function main() {
       }
     }
 
-    // Check pattern docs — add age check, but skip analyses/ (they're time-boxed snapshots)
-    if (exists(PATTERNS_DIR)) {
-      for (const f of fs.readdirSync(PATTERNS_DIR).filter(f => f.endsWith(".md"))) {
-        const fullPath = path.join(PATTERNS_DIR, f);
-        const mtime = fs.statSync(fullPath).mtimeMs;
-        const ageInDays = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
-        if (ageInDays > 14) {
-          driftItems.push({
-            file: `docs/internal/patterns/${f}`, type: "pattern", severity: "outdated",
-            issue: `Not updated in ${Math.floor(ageInDays)} days — may be stale`,
-          });
-        }
-      }
-    }
+    // (Removed v4.16.0) The pattern-doc "not updated in 14 days" age check used fs.mtime —
+    // meaningless across clones (all "now") and pure treadmill noise on a mature repo (a
+    // correct, stable doc is not stale). This is exactly the age-based flagging the staleness
+    // engine deliberately dropped for content-aware detection; `--stale` owns real "is this
+    // doc stale". Reconcile stays focused on DRIFT (broken refs, topics vs decisions).
 
     // Overlap detection — find docs that reference the same set of code files
     const docFileRefs = new Map<string, Set<string>>();
@@ -1876,7 +1896,7 @@ function main() {
     ];
 
     // Find code directories that might represent features
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
     const codeDirs = new Map<string, number>();
@@ -2015,7 +2035,7 @@ function main() {
 
   if (MODE === "annotate") {
     console.log("\n🤵 Jeeves — Annotate Code\n");
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
 
     // Find code files with few or no comments
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
@@ -2083,7 +2103,7 @@ function main() {
 
   if (MODE === "verify") {
     console.log("\n🤵 Jeeves — Verify Comments\n");
-    const codeFilter = "grep -vE '^(docs/|thinking/|\\.claude/|\\.|README|LICENSE|CHANGELOG|package|tsconfig|node_modules/)' | grep -E '\\.(ts|tsx|js|jsx|py|go|rs)$'";
+    const codeFilter = CODE_FILTER;
 
     const allCode = run(`git -c core.quotepath=off ls-files 2>/dev/null | ${codeFilter}`);
     const codeFiles = allCode ? allCode.split("\n").filter(Boolean) : [];
@@ -2502,7 +2522,10 @@ Append-only chronological record of KB activity. Newest at top.
     const REGISTRATION_CAPTURE_THRESHOLD = 2;
     let captureCount = 0;
     if (exists(THINKING_DIR)) {
-      for (const d of ["decisions", "topics", "sessions"]) {
+      // Count real captures only — decisions + topics. NOT sessions/: the Stop-gate salvage
+      // writes a "No decisions … arose this session" file there, which would inflate the
+      // "Jeeves has captured N decisions for you" signup nudge with empty sessions (v4.16.0).
+      for (const d of ["decisions", "topics"]) {
         const dir = path.join(THINKING_DIR, d);
         if (!exists(dir)) continue;
         try { captureCount += fs.readdirSync(dir).filter(f => f.endsWith(".md")).length; } catch {}
@@ -2531,7 +2554,11 @@ Append-only chronological record of KB activity. Newest at top.
     const recentGitCommit = lastCommitPrompt > 0 && (prompts - lastCommitPrompt) < GIT_DEFER_WINDOW;
 
     const sessionHasSubstance = prompts >= SUBSTANCE_THRESHOLD;
-    const deferForGit = state.mode === "both" && recentGitCommit;
+    // Also defer on headChanged: a commit made DURING the current turn is only turned into
+    // last_commit_prompt by session-check on the NEXT prompt, so without this the Stop gate at
+    // the end of the committing turn wouldn't defer and could hard-block — the exact moment the
+    // git-defer window exists to protect (v4.16.0).
+    const deferForGit = state.mode === "both" && (recentGitCommit || headChanged);
     // Don't hard-block before the user has seen at least one nudge. Nudges fire at the
     // first prompt that is a multiple of NUDGE_INTERVAL and >= SUBSTANCE_THRESHOLD
     // (i.e. prompt 10 with the defaults); blocking at 6-9 would ambush a session that
