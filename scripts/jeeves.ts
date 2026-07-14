@@ -1514,23 +1514,26 @@ function main() {
           }
         }
 
-        // Check if topic has "Proposals" that were actually decided
+        // Check if topic has "Proposals" that were actually decided. Compare the newest
+        // decision's COMMIT time against the topic's commit time (topicTime) — never fs.mtime,
+        // which is meaningless across clones/checkouts (the false-positive class this function
+        // dropped mtime for elsewhere). (Bug fixed v4.14.x: this compared `decMtime > mtime`
+        // where `mtime` was undefined — only reachable via a topic with a `## Proposals`
+        // section, so the fail-open catch masked it.)
         if (content.includes("## Proposals") || content.includes("## Proposals (not yet confirmed)")) {
           const proposalSection = content.match(/## Proposals[\s\S]*?(?=\n## |$)/);
-          if (proposalSection && proposalSection[0].length > 50) {
-            // Check if any of those proposals became decisions
-            for (const decDir of [path.join(DOCS_DIR, "decisions")]) {
-              if (!exists(decDir)) continue;
-              const decMtime = fs.readdirSync(decDir)
+          if (proposalSection && proposalSection[0].length > 50 && topicTime > 0) {
+            const decDir = path.join(DOCS_DIR, "decisions");
+            if (exists(decDir)) {
+              const newestDecTime = fs.readdirSync(decDir)
                 .filter(df => df.endsWith(".md"))
-                .map(df => fs.statSync(path.join(decDir, df)).mtimeMs)
+                .map(df => gitCommitTime(path.relative(ROOT, path.join(decDir, df))))
                 .sort((a, b) => b - a)[0] || 0;
-              if (decMtime > mtime) {
+              if (newestDecTime > topicTime) {
                 driftItems.push({
                   file: relPath, type: "topic", severity: "outdated",
                   issue: `Has proposals that may have been decided since last update — check against recent decisions`,
                 });
-                break;
               }
             }
           }

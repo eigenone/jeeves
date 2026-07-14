@@ -1117,18 +1117,17 @@ Agent: Tell the user the export is ready. They can share this file with their te
         }
         if (content.includes("## Proposals") || content.includes("## Proposals (not yet confirmed)")) {
           const proposalSection = content.match(/## Proposals[\s\S]*?(?=\n## |$)/);
-          if (proposalSection && proposalSection[0].length > 50) {
-            for (const decDir of [path.join(DOCS_DIR, "decisions")]) {
-              if (!exists(decDir)) continue;
-              const decMtime = fs.readdirSync(decDir).filter((df) => df.endsWith(".md")).map((df) => fs.statSync(path.join(decDir, df)).mtimeMs).sort((a, b) => b - a)[0] || 0;
-              if (decMtime > mtime) {
+          if (proposalSection && proposalSection[0].length > 50 && topicTime > 0) {
+            const decDir = path.join(DOCS_DIR, "decisions");
+            if (exists(decDir)) {
+              const newestDecTime = fs.readdirSync(decDir).filter((df) => df.endsWith(".md")).map((df) => gitCommitTime(path.relative(ROOT, path.join(decDir, df)))).sort((a, b) => b - a)[0] || 0;
+              if (newestDecTime > topicTime) {
                 driftItems.push({
                   file: relPath,
                   type: "topic",
                   severity: "outdated",
                   issue: `Has proposals that may have been decided since last update \u2014 check against recent decisions`
                 });
-                break;
               }
             }
           }
@@ -1138,8 +1137,8 @@ Agent: Tell the user the export is ready. They can share this file with their te
     if (exists(PATTERNS_DIR)) {
       for (const f of fs.readdirSync(PATTERNS_DIR).filter((f2) => f2.endsWith(".md"))) {
         const fullPath = path.join(PATTERNS_DIR, f);
-        const mtime2 = fs.statSync(fullPath).mtimeMs;
-        const ageInDays = (Date.now() - mtime2) / (1e3 * 60 * 60 * 24);
+        const mtime = fs.statSync(fullPath).mtimeMs;
+        const ageInDays = (Date.now() - mtime) / (1e3 * 60 * 60 * 24);
         if (ageInDays > 14) {
           driftItems.push({
             file: `docs/internal/patterns/${f}`,
