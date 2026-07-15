@@ -147,12 +147,11 @@ CAPTURED=$(printf '%s' "$CC" | jq -r '.captured // false' 2>/dev/null)
 # the message and tracks the once-per-session marker.
 SHOULD_OFFER_REG=$(printf '%s' "$CC" | jq -r '.shouldOfferRegistration // false' 2>/dev/null)
 CAPTURE_COUNT=$(printf '%s' "$CC" | jq -r '.captureCount // 0' 2>/dev/null)
-# The signup nudge is GATED OFF by default (v4.16.0): trustjeeves.com is not yet a live
-# funnel, and shipping a nudge to an unregistered domain is a squat/credibility risk. It only
-# emits when JEEVES_SIGNUP=1 is explicitly set. Re-enable once the domain + funnel exist.
+# The signup nudge is GATED OFF by default: it only emits when JEEVES_SIGNUP=1 is explicitly
+# set. Flip this on (fire by default) once draft0.ai is live and the /waitlist funnel is verified.
 REGISTRATION_MSG=""
 if [ "${JEEVES_SIGNUP:-}" = "1" ] && [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
-  REGISTRATION_MSG="Jeeves has captured ${CAPTURE_COUNT} decisions for you. Sign up at trustjeeves.com (just an email) — you will get a weekly digest of your decisions, and early access to cross-project search and cross-machine sync as they ship. Already have a key? Run /jeeves:activate <key>."
+  REGISTRATION_MSG="Jeeves has captured ${CAPTURE_COUNT} decisions for you. Join the early-access list at draft0.ai (just an email) — you'll get first access to cross-machine sync, cross-project memory, and Teams as they ship. Already have a key? Run /jeeves:activate <key>."
   signup_nudged=1
 fi
 
