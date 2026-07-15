@@ -4,10 +4,10 @@ compatibility_date = "2024-12-01"
 
 [vars]
 BRAND_NAME = "Jeeves"
-SITE_URL = "https://trustjeeves.com"
-MAIL_FROM = "Jeeves <hello@trustjeeves.com>"
+SITE_URL = "https://draft0.ai"
+MAIL_FROM = "Jeeves <hello@draft0.ai>"
 # MAIL_REPLY_TO is optional; uncomment to override reply-to
-# MAIL_REPLY_TO = "support@trustjeeves.com"
+# MAIL_REPLY_TO = "support@draft0.ai"
 
 [[d1_databases]]
 binding = "DB"

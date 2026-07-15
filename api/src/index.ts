@@ -2,6 +2,7 @@
  * Jeeves API — Cloudflare Worker
  *
  * Endpoints:
+ *   POST /waitlist  — email + source → stores an early-access signup (no account)
  *   POST /signup    — email + persona → creates user, returns API key
  *   POST /check     — api_key + skill → validates license, returns allow/deny
  *   POST /events    — api_key + event data → logs usage
@@ -13,8 +14,8 @@ interface Env {
   DB: D1Database;
   RESEND_API_KEY?: string;   // secret — wrangler secret put
   BRAND_NAME?: string;        // var — e.g., "Jeeves"
-  SITE_URL?: string;          // var — e.g., "https://trustjeeves.com"
-  MAIL_FROM?: string;         // var — e.g., "Jeeves <hello@trustjeeves.com>"
+  SITE_URL?: string;          // var — e.g., "https://draft0.ai"
+  MAIL_FROM?: string;         // var — e.g., "Jeeves <hello@draft0.ai>"
   MAIL_REPLY_TO?: string;     // var (optional) — overrides default reply-to
 }
 
@@ -47,6 +48,30 @@ function json(data: unknown, status = 200): Response {
       headers: { "Content-Type": "application/json" },
     })
   );
+}
+
+// ── Waitlist ────────────────────────────────────────────
+// Lightweight early-access capture for the draft0.ai landing page. Stores the
+// email only — no account, no API key, no trial. Idempotent on email.
+
+async function handleWaitlist(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json()) as { email?: string; source?: string };
+
+  if (!body.email || !body.email.includes("@")) {
+    return json({ error: "Valid email required" }, 400);
+  }
+
+  const email = body.email.trim().toLowerCase();
+  const source = (body.source || "web").slice(0, 64);
+
+  await env.DB.prepare(
+    `INSERT INTO waitlist (email, source) VALUES (?, ?)
+     ON CONFLICT(email) DO UPDATE SET source = excluded.source, updated_at = datetime('now')`
+  )
+    .bind(email, source)
+    .run();
+
+  return json({ ok: true, message: "You're on the list." });
 }
 
 // ── Signup ──────────────────────────────────────────────
@@ -124,7 +149,7 @@ async function handleCheck(request: Request, env: Env): Promise<Response> {
     return json({
       decision: isFree ? "allow" : "deny",
       plan: "free",
-      reason: isFree ? undefined : "No API key. Free modes: /jeeves, /jeeves:end, /jeeves:summary. Get a key at trustjeeves.com",
+      reason: isFree ? undefined : "No API key. Free modes: /jeeves, /jeeves:end, /jeeves:summary. Get a key at draft0.ai",
     });
   }
 
@@ -136,7 +161,7 @@ async function handleCheck(request: Request, env: Env): Promise<Response> {
     .first();
 
   if (!user) {
-    return json({ decision: "deny", reason: "Invalid API key. Sign up at trustjeeves.com" }, 401);
+    return json({ decision: "deny", reason: "Invalid API key. Sign up at draft0.ai" }, 401);
   }
 
   // Check trial expiration
@@ -249,7 +274,7 @@ async function handleCheck(request: Request, env: Env): Promise<Response> {
     tokens_allowed: tokensAllowed,
     reason: allowed
       ? undefined
-      : `Token limit reached (${tokensUsed}/${tokensAllowed} this month). Upgrade at trustjeeves.com`,
+      : `Token limit reached (${tokensUsed}/${tokensAllowed} this month). Upgrade at draft0.ai`,
   });
 }
 
@@ -424,8 +449,8 @@ async function handleHealth(env: Env): Promise<Response> {
 async function sendWelcomeEmail(env: Env, toEmail: string, apiKey: string): Promise<{ ok: boolean; error?: string }> {
   const RESEND_API_KEY = env.RESEND_API_KEY;
   const BRAND = env.BRAND_NAME || "Jeeves";
-  const SITE_URL = (env.SITE_URL || "https://trustjeeves.com").replace(/\/$/, "");
-  const MAIL_FROM = env.MAIL_FROM || `${BRAND} <hello@${(() => { try { return new URL(SITE_URL).hostname; } catch { return "trustjeeves.com"; } })()}>`;
+  const SITE_URL = (env.SITE_URL || "https://draft0.ai").replace(/\/$/, "");
+  const MAIL_FROM = env.MAIL_FROM || `${BRAND} <hello@${(() => { try { return new URL(SITE_URL).hostname; } catch { return "draft0.ai"; } })()}>`;
   const MAIL_REPLY_TO = env.MAIL_REPLY_TO; // optional
   if (!RESEND_API_KEY) return { ok: false, error: "RESEND_API_KEY not set" };
 
@@ -487,6 +512,9 @@ export default {
     try {
       if (url.pathname === "/health" && request.method === "GET") {
         return handleHealth(env);
+      }
+      if (url.pathname === "/waitlist" && request.method === "POST") {
+        return handleWaitlist(request, env);
       }
       if (url.pathname === "/signup" && request.method === "POST") {
         return handleSignup(request, env, ctx);
