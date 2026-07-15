@@ -1,14 +1,14 @@
 {
   "name": "jeeves",
   "description": "Jeeves, by Draft0 — your AI doesn't remember, Jeeves does. Session memory and living documentation for Claude Code.",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "author": {
     "name": "Draft0",
     "email": "hello@draft0.ai"
   },
   "homepage": "https://draft0.ai",
   "repository": "https://github.com/eigenone/jeeves-agentknowledge",
-  "license": "MIT",
+  "license": "LicenseRef-Proprietary",
   "keywords": [
     "documentation",
     "knowledge-base",
