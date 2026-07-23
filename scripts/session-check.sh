@@ -45,6 +45,28 @@ else
   emit_empty
 fi
 
+# ── GATE: Jeeves requires a valid account key ──────────────────────────────────────────────
+# Without a key on disk, Jeeves' memory + capture are OFF. In a Jeeves-active repo, nudge the
+# user to activate (once per session, via a /tmp marker) and suppress the rest; in any other
+# repo stay silent. This is a key-PRESENCE check only (no network per prompt) — the skill hook
+# (credit-check.sh) does the authoritative online validation + hard block.
+if [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ]; then
+  _hk=""
+  for _f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
+    case "$_f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
+    if [ -f "$_f" ]; then _hk=$(tr -d ' \t\n\r' < "$_f" 2>/dev/null); [ -n "$_hk" ] && break; fi
+  done
+  if [ -z "$_hk" ]; then
+    _mark="/tmp/jeeves-nokey-${SAFE_ID}"
+    [ -f "$_mark" ] && emit_empty
+    : > "$_mark" 2>/dev/null || true
+    _msg='Jeeves is installed here but not activated — it needs a free account to run, so its memory and capture are OFF. Tell the user (once): run /jeeves:login to activate — one command, it opens the browser, nothing to copy.'
+    _out=$(printf '%s' "$_msg" | jq -Rsc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}' 2>/dev/null)
+    [ -n "$_out" ] && { printf '%s\n' "$_out"; exit 0; }
+    emit_empty
+  fi
+fi
+
 # --- state load (key=value; fail-open to zeros) ---
 prompts=0; nudge_level=0; bootstrapped=0; layer1_injected=0; head_at_last_check=""
 last_block_turn=0; block_count=0; since=""; last_commit_prompt=0; version_warned=0; signup_nudged=0; memory_injected=0; memory_protocol_injected=0; kb_offered=0; kb_core_injected=0
@@ -141,19 +163,12 @@ CAPTURED=$(printf '%s' "$CC" | jq -r '.captured // false' 2>/dev/null)
 # Spec: a fresh thinking/ write resets the escalation ladder to 0.
 [ "$CAPTURED" = "true" ] && nudge_level=0
 
-# --- Registration nudge (mid-session, once per session) ---
-# Emits a value-moment signup ask after enough captures + prompts accumulate
-# without a local key. Strict triggers in --capture-check; this just formats
-# the message and tracks the once-per-session marker.
-SHOULD_OFFER_REG=$(printf '%s' "$CC" | jq -r '.shouldOfferRegistration // false' 2>/dev/null)
-CAPTURE_COUNT=$(printf '%s' "$CC" | jq -r '.captureCount // 0' 2>/dev/null)
-# The signup nudge fires by default now that draft0.ai + the /waitlist funnel are live.
-# Opt out with JEEVES_SIGNUP=0.
+# --- Registration nudge: REMOVED — superseded by the key gate above ---
+# Jeeves now requires an account key up front: when there's no key in a Jeeves-active repo,
+# the gate near the top of this hook nudges /jeeves:login and suppresses the rest. So the old
+# "earn value, then offer signup after N prompts" flow is obsolete. REGISTRATION_MSG stays
+# defined-but-empty so the FULL_CTX assembly below is unchanged.
 REGISTRATION_MSG=""
-if [ "${JEEVES_SIGNUP:-1}" != "0" ] && [ "$SHOULD_OFFER_REG" = "true" ] && [ "$signup_nudged" != "1" ]; then
-  REGISTRATION_MSG="Jeeves has captured ${CAPTURE_COUNT} decisions for you. Join the early-access list at draft0.ai (just an email) — you'll get first access to cross-machine sync, cross-project memory, and Teams as they ship. Already have a key? Run /jeeves:activate <key>."
-  signup_nudged=1
-fi
 
 # --- Memory layer (once per session, mode-INDEPENDENT) ---
 # (1) READ: inject the typed memory/ layer (prefs/feedback/reference), prompt-SCORED so the
