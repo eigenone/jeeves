@@ -43,7 +43,7 @@ export function isFileRef(token: string): boolean {
     !cleanish.includes("<") && // placeholder tokens like /p/<id>/<slug>
     !/[*?{}]/.test(cleanish) && // globs (existsSync always fails them)
     !cleanish.startsWith("path/to/") && // the canonical placeholder-path idiom
-    !(multiSeg && firstSeg.includes(".")) && // hostname-shaped first segment (raw.githubusercontent.com/...) — only for multi-segment, so a single relative file `./x.md` isn't excluded by its own extension dot
+    !(multiSeg && firstSeg.includes(".") && !firstSeg.startsWith(".")) && // hostname-shaped first segment (raw.githubusercontent.com/...) — only for multi-segment, so a single relative file `./x.md` isn't excluded by its own extension dot. A first segment STARTING with "." is a dotdir (.github/, .claude/, .githooks/), NOT a hostname — keep it (matches jeeves.ts findBrokenPaths allowlist).
     cleanish.length < 200
   );
 }

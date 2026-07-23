@@ -100,14 +100,22 @@ function runJeevesJson(projectRoot, mode) {
   if (!script) {
     return { error: `Cannot locate jeeves engine (looked for jeeves.cjs/.ts in CLAUDE_PLUGIN_ROOT, plugin dir, ${projectRoot}/scripts)` };
   }
-  // .cjs runs under node directly; .ts needs the tsx loader via npx.
+  // .cjs runs under node directly; .ts needs the tsx loader via npx. Use --no-install
+  // (like the hooks) so a cold tsx cache doesn't trigger a network fetch that eats the
+  // 45s timeout — fail fast with a clear message instead.
   const isCjs = script.endsWith(".cjs");
-  const [cmd, pre] = isCjs ? ["node", []] : ["npx", ["tsx"]];
+  const [cmd, pre] = isCjs ? ["node", []] : ["npx", ["--no-install", "tsx"]];
   const result = spawnSync(cmd, [...pre, script, projectRoot, `--${mode}`, "--json"], {
     cwd: projectRoot,
     timeout: 45000,
     encoding: "utf-8",
   });
+  // spawnSync failed to launch/complete the process (ENOENT, timeout, etc.). Check this
+  // BEFORE result.status — on these failures status is null and the raw message is
+  // "exited null", which hides the real cause (matches searchKb's error handling).
+  if (result.error) {
+    return { error: `jeeves --${mode} failed to run: ${result.error.message}` };
+  }
   if (result.status !== 0) {
     return { error: `jeeves --${mode} exited ${result.status}: ${result.stderr || result.stdout}` };
   }
@@ -150,7 +158,9 @@ function searchKb(projectRoot, query, scope, limit) {
   }
 
   const lines = (result.stdout || "").split("\n").filter(Boolean);
-  const max = Math.min(limit || 20, 100);
+  // Clamp: a caller passing limit <= 0 (or NaN) would otherwise slice(0, <=0) → zero
+  // matches. Floor at 1, cap at 100.
+  const max = Math.min(Math.max(Math.floor(limit) || 20, 1), 100);
   const matches = lines.slice(0, max).map(line => {
     const idx1 = line.indexOf(":");
     const idx2 = line.indexOf(":", idx1 + 1);

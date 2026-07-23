@@ -83,7 +83,9 @@ ACTIONS_UNINDEXED=$(printf '%s\n' "$NEW_SIGS" | grep '^unindexed|' \
 
 ACTIONS=$(printf '%s\n%s\n' "$ACTIONS_FROM_JSON" "$ACTIONS_UNINDEXED" \
   | grep -v '^$' | head -10 | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
-NEW_COUNT=$(printf '%s\n' "$NEW_SIGS" | grep -vc '^$' || echo 0)
+# grep -vc already prints a count on stdout (0 when nothing matches); the old `|| echo 0`
+# appended a SECOND 0 on grep's exit-1, yielding "0\n0" (align with post-commit-nudge.sh).
+NEW_COUNT=$(printf '%s\n' "$NEW_SIGS" | grep -vc '^$'); NEW_COUNT=${NEW_COUNT:-0}
 
 [ -z "$ACTIONS" ] && { echo '{}'; exit 0; }
 printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"You just pushed. Jeeves found %s NEW or newly-escalated doc action(s) since your last push. Actions: %s"}}\n' "$NEW_COUNT" "$ACTIONS"

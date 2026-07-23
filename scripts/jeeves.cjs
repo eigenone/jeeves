@@ -25,16 +25,34 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
 var import_child_process = require("child_process");
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["--root", "--prompt", "--session", "--prompts", "--head-last", "--since", "--last-commit-prompt"]);
+var VALUE_POSITIONS = (() => {
+  const s = /* @__PURE__ */ new Set();
+  const a = process.argv;
+  for (let i = 2; i < a.length; i++) if (VALUE_FLAGS.has(a[i]) && i + 1 < a.length) s.add(i + 1);
+  return s;
+})();
 var ROOT = (() => {
   const ri = process.argv.indexOf("--root");
   if (ri >= 0 && process.argv[ri + 1]) return process.argv[ri + 1];
-  const absPositional = process.argv.slice(2).find((a) => !a.startsWith("-") && path.isAbsolute(a));
-  if (absPositional) return absPositional;
+  for (let i = 2; i < process.argv.length; i++) {
+    if (VALUE_POSITIONS.has(i)) continue;
+    const a = process.argv[i];
+    if (!a.startsWith("-") && path.isAbsolute(a)) return a;
+  }
   return process.cwd();
 })();
 var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"];
-var MODE = MODES.find((m) => process.argv.includes(`--${m}`)) || "sync";
-var JSON_OUT = process.argv.includes("--json");
+function hasFlag(name) {
+  const tok = `--${name}`;
+  for (let i = 2; i < process.argv.length; i++) {
+    if (VALUE_POSITIONS.has(i)) continue;
+    if (process.argv[i] === tok) return true;
+  }
+  return false;
+}
+var MODE = MODES.find((m) => hasFlag(m)) || "sync";
+var JSON_OUT = hasFlag("json");
 function argVal(flag) {
   const i = process.argv.indexOf(flag);
   return i >= 0 ? process.argv[i + 1] : void 0;

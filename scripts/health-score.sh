@@ -24,7 +24,7 @@ echo "╔═══════════════════════�
 echo "║       KNOWLEDGE BASE HEALTH DASHBOARD       ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "Project: $(basename $(cd "$ROOT" && pwd))"
+echo "Project: $(basename "$(cd "$ROOT" && pwd)")"
 echo "Date:    $(date '+%Y-%m-%d %H:%M')"
 echo ""
 
@@ -175,7 +175,10 @@ if [ -f "$DOCS_DIR/SYSTEM-MAP.md" ]; then
   fi
 
   # Check for (TODO) entries
-  TODOS=$(grep -c "(TODO)" "$DOCS_DIR/SYSTEM-MAP.md" 2>/dev/null | tr -d '[:space:]' || echo "0")
+  # `grep -c | tr ... || echo 0` never fires the fallback (tr's exit masks grep's), and an
+  # empty value throws "integer expression expected" in [ -eq ]. grep -c already prints 0
+  # on no match; guard with ${VAR:-0} for the (rare) empty-output case.
+  TODOS=$(grep -c "(TODO)" "$DOCS_DIR/SYSTEM-MAP.md" 2>/dev/null); TODOS=${TODOS:-0}
   if [ "$TODOS" -eq 0 ]; then
     echo "  ✓ No (TODO) entries in system map"
     COMP_SCORE=$((COMP_SCORE + 5))
@@ -247,9 +250,11 @@ if [ ! -f "$DOCS_DIR/codebase-audit.md" ]; then
   echo "  ✗ No audit file (required — run audit or create with 'all clear')"
   AUDIT_SCORE=0
 elif [ -f "$DOCS_DIR/codebase-audit.md" ]; then
-  CRITICAL=$(grep -c "^### .*Critical\|^### .*CRITICAL" "$DOCS_DIR/codebase-audit.md" 2>/dev/null | tr -d '[:space:]' || echo "0")
-  IMPORTANT=$(grep -c "^### [0-9]" "$DOCS_DIR/codebase-audit.md" 2>/dev/null | tr -d '[:space:]' || echo "0")
-  RESOLVED=$(grep -c "^|.*|.*|.*|" "$DOCS_DIR/codebase-audit.md" 2>/dev/null | tr -d '[:space:]' || echo "0")
+  # grep -c prints 0 on no match; ${VAR:-0} guards the empty-output edge (the `| tr || echo 0`
+  # idiom never fired its fallback because tr masks grep's exit status).
+  CRITICAL=$(grep -c "^### .*Critical\|^### .*CRITICAL" "$DOCS_DIR/codebase-audit.md" 2>/dev/null); CRITICAL=${CRITICAL:-0}
+  IMPORTANT=$(grep -c "^### [0-9]" "$DOCS_DIR/codebase-audit.md" 2>/dev/null); IMPORTANT=${IMPORTANT:-0}
+  RESOLVED=$(grep -c "^|.*|.*|.*|" "$DOCS_DIR/codebase-audit.md" 2>/dev/null); RESOLVED=${RESOLVED:-0}
   # Subtract header row and empty row
   RESOLVED=$((RESOLVED > 2 ? RESOLVED - 2 : 0))
 

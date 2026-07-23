@@ -42,7 +42,10 @@ for f in "$DOCS_DIR/patterns/"*.md; do
   [ -f "$f" ] || continue
   BASENAME=$(basename "$f")
 
-  if ! grep -q "patterns/$BASENAME" "$SYSTEM_MAP" 2>/dev/null; then
+  # Boundary-aware, dot-literal match (mirrors lint-docs.ts listedInMap): a bare
+  # `grep patterns/$BASENAME` treats `.` as any-char and has no word boundary, so
+  # `auth.md` matched `auth.mdx` / `authx.md` and the entry was falsely "found".
+  if ! grep -qE "(^|[^A-Za-z0-9._/-])patterns/$(printf '%s' "$BASENAME" | sed 's/[.[\*^$/]/\\&/g')([^A-Za-z0-9._-]|\$)" "$SYSTEM_MAP" 2>/dev/null; then
     echo "  ✗ patterns/$BASENAME — NOT in SYSTEM-MAP.md"
     MISSING_PATTERNS+=("$BASENAME")
   else
@@ -58,7 +61,7 @@ for f in "$DOCS_DIR/decisions/"*.md; do
   [ -f "$f" ] || continue
   BASENAME=$(basename "$f")
 
-  if ! grep -q "decisions/$BASENAME" "$SYSTEM_MAP" 2>/dev/null; then
+  if ! grep -qE "(^|[^A-Za-z0-9._/-])decisions/$(printf '%s' "$BASENAME" | sed 's/[.[\*^$/]/\\&/g')([^A-Za-z0-9._-]|\$)" "$SYSTEM_MAP" 2>/dev/null; then
     echo "  ✗ decisions/$BASENAME — NOT in SYSTEM-MAP.md"
     MISSING_DECISIONS+=("$BASENAME")
   else
@@ -106,31 +109,56 @@ fi
 echo "Missing from index: ${#MISSING_PATTERNS[@]} patterns, ${#MISSING_DECISIONS[@]} decisions"
 echo ""
 
+# Append a table row to a named section. Anchors on the section HEADING (which the
+# template guarantees: "## 5. Pattern Index" / "## 6. Decision Index"), inserting the
+# row right after the section's markdown table header separator (|---|). The previous
+# implementation anchored on a literal sentence ("All pattern docs live in") that does
+# NOT exist in the current template, so --fix silently inserted nothing while still
+# printing success. Fails loudly (exit 1) if the section heading is absent.
+# Usage: insert_row <section-heading-regex> <row-text>
+insert_row() {
+  local heading="$1" row="$2"
+  if ! grep -qE "$heading" "$SYSTEM_MAP"; then
+    echo "  ✗ Could not find section heading /$heading/ in SYSTEM-MAP.md — cannot insert row." >&2
+    echo "    Add the section manually, then re-run with --fix." >&2
+    return 1
+  fi
+  # Insert after the FIRST table-separator line (|---...) that follows the heading.
+  awk -v heading="$heading" -v row="$row" '
+    BEGIN { in_sec=0; done=0 }
+    {
+      print
+      if (!done && $0 ~ heading) { in_sec=1; next }
+      if (in_sec && !done && $0 ~ /^\|[- :|]+\|[[:space:]]*$/) { print row; done=1; in_sec=0 }
+    }
+    END { if (!done) exit 3 }
+  ' "$SYSTEM_MAP" > "$SYSTEM_MAP.tmp"
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    rm -f "$SYSTEM_MAP.tmp"
+    echo "  ✗ Found section /$heading/ but no table header separator (|---|) beneath it — cannot insert row." >&2
+    return 1
+  fi
+  mv "$SYSTEM_MAP.tmp" "$SYSTEM_MAP"
+  return 0
+}
+
 # Fix mode: append missing entries
 if [ "$FIX_MODE" = true ]; then
   echo "=== Applying Fixes ==="
   echo ""
+  FIX_FAILED=0
 
   if [ ${#MISSING_PATTERNS[@]} -gt 0 ]; then
     echo "Adding ${#MISSING_PATTERNS[@]} pattern entries to SYSTEM-MAP.md..."
 
-    # Find the line "All pattern docs live in" and insert before it
     for BASENAME in "${MISSING_PATTERNS[@]}"; do
-      # Extract the "What this is" line from the doc for the description
-      SUMMARY=$(head -10 "$DOCS_DIR/patterns/$BASENAME" | grep -A1 "What this is" | tail -1 | sed 's/^[[:space:]]*//' | head -c 80)
       NAME=$(echo "$BASENAME" | sed 's/\.md$//' | sed 's/-/ /g')
-
-      # Insert a new row into the pattern index table
-      # We use sed to insert before "All pattern docs live in"
-      if [ "$(uname)" = "Darwin" ]; then
-        sed -i '' "/All pattern docs live in/i\\
-| Work with $NAME | \`patterns/$BASENAME\` |
-" "$SYSTEM_MAP"
+      if insert_row "^#+[[:space:]].*Pattern Index" "| Work with $NAME | \`patterns/$BASENAME\` |"; then
+        echo "  + patterns/$BASENAME → 'Work with $NAME'"
       else
-        sed -i "/All pattern docs live in/i\\| Work with $NAME | \`patterns/$BASENAME\` |" "$SYSTEM_MAP"
+        FIX_FAILED=1
       fi
-
-      echo "  + patterns/$BASENAME → 'Work with $NAME'"
     done
   fi
 
@@ -139,20 +167,19 @@ if [ "$FIX_MODE" = true ]; then
 
     for BASENAME in "${MISSING_DECISIONS[@]}"; do
       NAME=$(echo "$BASENAME" | sed 's/\.md$//' | sed 's/-/ /g')
-
-      if [ "$(uname)" = "Darwin" ]; then
-        sed -i '' "/All decision docs live in/i\\
-| The $NAME approach | \`decisions/$BASENAME\` |
-" "$SYSTEM_MAP"
+      if insert_row "^#+[[:space:]].*Decision Index" "| The $NAME approach | \`decisions/$BASENAME\` |"; then
+        echo "  + decisions/$BASENAME → 'The $NAME approach'"
       else
-        sed -i "/All decision docs live in/i\\| The $NAME approach | \`decisions/$BASENAME\` |" "$SYSTEM_MAP"
+        FIX_FAILED=1
       fi
-
-      echo "  + decisions/$BASENAME → 'The $NAME approach'"
     done
   fi
 
   echo ""
+  if [ "$FIX_FAILED" -ne 0 ]; then
+    echo "Some entries could NOT be inserted (see errors above). SYSTEM-MAP.md may be incomplete."
+    exit 1
+  fi
   echo "Done. Review the auto-generated descriptions and refine them."
   echo "The generated descriptions are generic — replace them with task-oriented phrases."
 else

@@ -65,7 +65,7 @@ function getAllMdFiles(dir: string): string[] {
 }
 
 function parseFrontmatter(content: string): Record<string, unknown> | null {
-  const norm = content.replace(/\r\n/g, "\n"); // CRLF-tolerant (else false "missing frontmatter")
+  const norm = content.replace(/^﻿/, "").replace(/\r\n/g, "\n"); // strip leading UTF-8 BOM + CRLF-tolerant (else false "missing frontmatter"; same fix the engine parser got in v4.16.0)
   const match = norm.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
 
@@ -345,16 +345,17 @@ function main() {
   console.log(`Warnings: ${warnings.length}`);
   console.log(`Info:     ${infos.length}`);
 
+  // Advisory only — content-lint NEVER blocks (fail-open house rule; it is not wired
+  // into the pre-push gate). Always exit 0 regardless of severity; the report above is
+  // the whole product. (Was exit(1) on errors, contradicting the file header.)
   if (errors.length > 0) {
-    console.log(`\nContent lint FAILED. Fix errors before pushing.`);
-    process.exit(1);
+    console.log(`\nContent lint found errors (advisory — does not block).`);
   } else if (warnings.length > 0) {
     console.log(`\nContent lint PASSED WITH WARNINGS.`);
-    process.exit(0);
   } else {
     console.log(`\nContent lint PASSED.`);
-    process.exit(0);
   }
+  process.exit(0);
 }
 
 main();

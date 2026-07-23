@@ -34,16 +34,42 @@ import { execSync, execFileSync } from "child_process";
 // mis-read "pricing" as ROOT, writing files into a junk dir and making every git
 // call ENOENT. Falls back to process.cwd() (correct for skills, which run with
 // cwd = the project dir).
+// Flags whose FOLLOWING token is a value, not a positional. A value token (e.g. the
+// user prompt after --prompt, which can be an absolute-looking path) must NOT be
+// mistaken for ROOT.
+const VALUE_FLAGS = new Set(["--root", "--prompt", "--session", "--prompts", "--head-last", "--since", "--last-commit-prompt"]);
+// argv positions that are VALUES of a value-flag (skip them when scanning for modes/flags/root).
+const VALUE_POSITIONS = (() => {
+  const s = new Set<number>();
+  const a = process.argv;
+  for (let i = 2; i < a.length; i++) if (VALUE_FLAGS.has(a[i]) && i + 1 < a.length) s.add(i + 1);
+  return s;
+})();
 const ROOT = (() => {
   const ri = process.argv.indexOf("--root");
   if (ri >= 0 && process.argv[ri + 1]) return process.argv[ri + 1];
-  const absPositional = process.argv.slice(2).find(a => !a.startsWith("-") && path.isAbsolute(a));
-  if (absPositional) return absPositional;
+  for (let i = 2; i < process.argv.length; i++) {
+    if (VALUE_POSITIONS.has(i)) continue;
+    const a = process.argv[i];
+    if (!a.startsWith("-") && path.isAbsolute(a)) return a;
+  }
   return process.cwd();
 })();
 const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"] as const;
-const MODE = MODES.find(m => process.argv.includes(`--${m}`)) || "sync";
-const JSON_OUT = process.argv.includes("--json");
+// True only if `--<name>` appears as a STANDALONE flag token (not as a flag's value).
+// Mode detection MUST use this — otherwise a user prompt forwarded as
+// `--prompt "--handoff"` flips the engine into handoff mode and writes a session doc
+// into the repo. See test-argv-dispatch.sh.
+function hasFlag(name: string): boolean {
+  const tok = `--${name}`;
+  for (let i = 2; i < process.argv.length; i++) {
+    if (VALUE_POSITIONS.has(i)) continue;
+    if (process.argv[i] === tok) return true;
+  }
+  return false;
+}
+const MODE = MODES.find(m => hasFlag(m)) || "sync";
+const JSON_OUT = hasFlag("json");
 function argVal(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   return i >= 0 ? process.argv[i + 1] : undefined;

@@ -66,15 +66,31 @@ function exists(filePath: string): boolean {
 }
 
 // Case-exact existence: on a case-insensitive FS (default macOS APFS), existsSync
-// returns true for `lib/Auth.ts` when the real file is `lib/auth.ts` — masking a ref
-// that is genuinely broken for Linux/CI collaborators. Verify the final segment's
-// exact case via the parent directory listing.
+// returns true for `Lib/Auth.ts` when the real file is `lib/auth.ts` — masking a ref
+// that is genuinely broken for Linux/CI collaborators. Walk EVERY path segment against
+// its parent dir listing (checking only the final segment missed `Lib/auth.ts` vs
+// `lib/auth.ts`). Fail OPEN: on any IO/permission error, fall back to existsSync so an
+// unreadable parent can never turn an existing file into a "broken" ref that blocks the
+// pre-push gate (fail-open is the house rule).
 function existsExactCase(filePath: string): boolean {
   if (!fs.existsSync(filePath)) return false;
   try {
-    return fs.readdirSync(path.dirname(filePath)).includes(path.basename(filePath));
+    // Resolve up to the filesystem root, then descend segment by segment, requiring each
+    // component to appear with EXACT case in its parent's listing.
+    const parsed = path.parse(path.resolve(filePath));
+    const segments = parsed.dir === parsed.root
+      ? [parsed.base]
+      : path.resolve(filePath).slice(parsed.root.length).split(path.sep).filter(Boolean);
+    let cur = parsed.root;
+    for (const seg of segments) {
+      const listing = fs.readdirSync(cur);
+      if (!listing.includes(seg)) return false;
+      cur = path.join(cur, seg);
+    }
+    return true;
   } catch {
-    return false;
+    // Unreadable parent dir etc. — fail OPEN (an existing file must not be reported broken).
+    return fs.existsSync(filePath);
   }
 }
 

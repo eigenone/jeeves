@@ -90,44 +90,56 @@ function getBasename(p: string): string {
  * a pathspec and filter the results in JS, matching lines of the form:
  *   R<score>\t<old-path>\t<new-path>
  */
-function findRenamedFile(oldPath: string): string | null {
+// The `git log -M` rename scan takes NO pathspec, so its output is identical for every
+// broken ref — running it per-ref (heal can process many) re-forks git needlessly. Scan
+// once, cache the parsed R<score>\told\tnew rows (most-recent-first), and reuse. `null`
+// means "not scanned yet"; an empty array means "scanned, no renames".
+let renameRowsCache: Array<{ old: string; new: string }> | null = null;
+function getRenameRows(): Array<{ old: string; new: string }> {
+  if (renameRowsCache !== null) return renameRowsCache;
+  const rows: Array<{ old: string; new: string }> = [];
   try {
-    const basename = getBasename(oldPath);
-    const oldDir = path.posix.dirname(oldPath);
-    // Scan renames via --name-status (R<score>\told\tnew); filter in JS.
-    // NOT `--all`: a rename on an abandoned/other branch must not heal a doc — we
-    // only trust renames reachable from HEAD. No pathspec (it filters the dest
-    // side). execFileSync (array args) — no shell, no injection.
+    // NOT `--all`: a rename on an abandoned/other branch must not heal a doc — we only
+    // trust renames reachable from HEAD. No pathspec (it filters the dest side).
+    // execFileSync (array args) — no shell, no injection.
     const output = execFileSync(
       "git",
       ["log", "-M", "--diff-filter=R", "--name-status", "--format="],
       { cwd: ROOT, encoding: "utf-8", timeout: 5000 }
     ).trim();
-    if (!output) return null;
-    // git log is reverse-chronological, so the first match is the most recent.
-    // Exact-path match is the ONLY unambiguous signal. A same-basename rename in a
-    // DIFFERENT directory (auth/session.ts vs payments/session.ts) must never win —
-    // that produced confidently-wrong auto-edits. Accept a basename match only when
-    // the source was in the SAME directory (file renamed in place); otherwise skip.
-    let sameDirFallback: string | null = null;
-    for (const line of output.split("\n").slice(0, 5000)) {
-      const parts = line.split("\t");
-      if (parts.length < 3 || !parts[0].startsWith("R")) continue;
-      const oldRenamed = parts[1].trim();
-      const newRenamed = parts[2].trim();
-      if (!fs.existsSync(path.join(ROOT, newRenamed))) continue;
-      if (oldRenamed === oldPath) return newRenamed; // exact — first (most recent) wins
-      if (sameDirFallback === null &&
-          getBasename(oldRenamed) === basename &&
-          path.posix.dirname(oldRenamed) === oldDir) {
-        sameDirFallback = newRenamed;
+    if (output) {
+      for (const line of output.split("\n").slice(0, 5000)) {
+        const parts = line.split("\t");
+        if (parts.length < 3 || !parts[0].startsWith("R")) continue;
+        rows.push({ old: parts[1].trim(), new: parts[2].trim() });
       }
     }
-    return sameDirFallback;
   } catch {
-    // git command failed — not a git repo or no history
+    // git command failed — not a git repo or no history; cache empty so we don't retry.
   }
-  return null;
+  renameRowsCache = rows;
+  return rows;
+}
+
+function findRenamedFile(oldPath: string): string | null {
+  const basename = getBasename(oldPath);
+  const oldDir = path.posix.dirname(oldPath);
+  // git log is reverse-chronological, so the first match is the most recent.
+  // Exact-path match is the ONLY unambiguous signal. A same-basename rename in a
+  // DIFFERENT directory (auth/session.ts vs payments/session.ts) must never win —
+  // that produced confidently-wrong auto-edits. Accept a basename match only when
+  // the source was in the SAME directory (file renamed in place); otherwise skip.
+  let sameDirFallback: string | null = null;
+  for (const { old: oldRenamed, new: newRenamed } of getRenameRows()) {
+    if (!fs.existsSync(path.join(ROOT, newRenamed))) continue;
+    if (oldRenamed === oldPath) return newRenamed; // exact — first (most recent) wins
+    if (sameDirFallback === null &&
+        getBasename(oldRenamed) === basename &&
+        path.posix.dirname(oldRenamed) === oldDir) {
+      sameDirFallback = newRenamed;
+    }
+  }
+  return sameDirFallback;
 }
 
 /**
@@ -336,13 +348,13 @@ function main() {
               confidence = "high";
               source = "moved";
             } else if (byBasename.length > 1) {
-              // Multiple matches — pick the one in the most similar directory
-              const origDir = path.dirname(refPath);
-              const best = byBasename.sort((a, b) => {
-                const aDist = path.dirname(a).split("/").filter(p => origDir.includes(p)).length;
-                const bDist = path.dirname(b).split("/").filter(p => origDir.includes(p)).length;
-                return bDist - aDist;
-              })[0];
+              // Multiple matches — pick the one sharing the most directory SEGMENTS with
+              // the original. Segment-exact set membership, not substring `includes`: the
+              // old check let `app` count as present in `apps` (and `auth` in `oauth`),
+              // scoring the wrong candidate highest.
+              const origSegs = new Set(path.dirname(refPath).split("/").filter(Boolean));
+              const shared = (p: string) => path.dirname(p).split("/").filter(seg => origSegs.has(seg)).length;
+              const best = byBasename.sort((a, b) => shared(b) - shared(a))[0];
               suggestion = best;
               confidence = "medium";
               source = "moved";
