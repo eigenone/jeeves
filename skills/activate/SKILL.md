@@ -1,33 +1,21 @@
 ---
 name: activate
-description: Activate Jeeves with your API key. Use when user says "activate", provides a jvs_ key, or after signing up at draft0.ai.
+description: Activate Jeeves with an API key, or create a per-project key for the current repo. Use when the user runs /jeeves:activate, pastes a jvs_ key, or wants to track one repo separately. For first-time setup prefer /jeeves:login (browser sign-in — no key to paste).
 disable-model-invocation: true
 ---
 
 # Jeeves — Activate
 
-The user is providing their Jeeves API key. Store it so all future sessions can use it.
-
-1. The key should start with `jvs_`. If not, tell the user to get one at draft0.ai
-
-2. Write the key to `~/.jeeves/key` — this activates Jeeves **globally**, so one key covers every repo you work in:
+`$ARGUMENTS` is what the user passed (a `jvs_` key, a project label, or nothing). Run the activate helper — it handles all three cases and writes the key itself:
 
 ```bash
-mkdir -p ~/.jeeves
-echo "$ARGUMENTS" > ~/.jeeves/key
-chmod 600 ~/.jeeves/key
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/jeeves-activate.sh "$ARGUMENTS"
 ```
 
-3. Verify the key works:
+Relay the script's output to the user.
 
-```bash
-curl -s -X POST https://server.draft0.ai/check -H "Content-Type: application/json" -d "{\"key\":\"$ARGUMENTS\",\"skill\":\"harden\"}"
-```
+- **No argument** → it explains the options: `/jeeves:login` to activate this machine (browser sign-in, nothing to paste), or `/jeeves:activate <label>` to create a per-repo key.
+- **A `jvs_` key** → stored as the global key and verified.
+- **A label** (e.g. `acme-web`) → mints a project-scoped key for the current repo and drops it in `.jeeves/key`, so that repo's usage tracks separately on the dashboard.
 
-If the response says `"decision": "allow"` — tell the user "Jeeves is activated! All Pro modes are available."
-
-If it says `"decision": "deny"` — tell the user the key is invalid or expired and to check draft0.ai.
-
-4. Tell the user: "Jeeves is ready. Try `/jeeves:report` to see how much context Jeeves has recalled for you."
-
-5. (Only if the user asks about tracking a project separately) The global key covers everything by default. To track one repo on its own key, they create a labeled key at draft0.ai and save it as `.jeeves/key` in that repo — a project-local key overrides the global one there. Most users never need this.
+For first-time setup, prefer **`/jeeves:login`** — it's the browser device flow with no key to copy. Do not print or write the key yourself; the script does it.
