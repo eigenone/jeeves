@@ -55,8 +55,10 @@ jeeves_telemetry() {
   [ "$TRACKING" = "anonymous" ] && return 0
 
   # A key is required to attribute usage (keyed users only). No key → send NOTHING.
+  # Precedence: PROJECT-LOCAL key wins over the global one, so telemetry for a repo with
+  # its own .jeeves/key attributes to that per-project key even when a global one exists.
   KEY=""
-  for f in "${HOME:-}/.jeeves/key" "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key"; do
+  for f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
     case "$f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
     if [ -f "$f" ]; then KEY=$(tr -d ' \t\n\r' < "$f" 2>/dev/null); [ -n "$KEY" ] && break; fi
   done

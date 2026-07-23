@@ -25,8 +25,11 @@ esac
 
 # A key is required to attribute usage. Without one there's nothing to meter — the
 # session-check hook handles the signup nudge.
+# Precedence: the PROJECT-LOCAL key wins over the global one, so a repo with its own
+# .jeeves/key (a per-project/use-case labeled key) attributes usage to that key even
+# when a global ~/.jeeves/key is also present.
 KEY=""
-for f in "${HOME:-}/.jeeves/key" "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key"; do
+for f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
   case "$f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
   if [ -f "$f" ]; then KEY=$(tr -d ' \t\n\r' < "$f" 2>/dev/null); [ -n "$KEY" ] && break; fi
 done
