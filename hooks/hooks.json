@@ -32,6 +32,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/credit-check.sh",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PostToolUse": [
