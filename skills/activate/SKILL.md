@@ -10,7 +10,7 @@ The user is providing their Jeeves API key. Store it so all future sessions can 
 
 1. The key should start with `jvs_`. If not, tell the user to get one at draft0.ai
 
-2. Write the key to `~/.jeeves/config`:
+2. Write the key to `~/.jeeves/key` — this activates Jeeves **globally**, so one key covers every repo you work in:
 
 ```bash
 mkdir -p ~/.jeeves
@@ -29,3 +29,5 @@ If the response says `"decision": "allow"` — tell the user "Jeeves is activate
 If it says `"decision": "deny"` — tell the user the key is invalid or expired and to check draft0.ai.
 
 4. Tell the user: "Jeeves is ready. Try `/jeeves:report` to see how much context Jeeves has recalled for you."
+
+5. (Only if the user asks about tracking a project separately) The global key covers everything by default. To track one repo on its own key, they create a labeled key at draft0.ai and save it as `.jeeves/key` in that repo — a project-local key overrides the global one there. Most users never need this.
