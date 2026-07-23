@@ -25,6 +25,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import { execSync, execFileSync } from "child_process";
 
 // Project root resolution. MUST be explicit — either `--root <dir>` or an
@@ -55,7 +56,7 @@ const ROOT = (() => {
   }
   return process.cwd();
 })();
-const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"] as const;
+const MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report", "telemetry"] as const;
 // True only if `--<name>` appears as a STANDALONE flag token (not as a flag's value).
 // Mode detection MUST use this — otherwise a user prompt forwarded as
 // `--prompt "--handoff"` flips the engine into handoff mode and writes a session doc
@@ -1231,7 +1232,7 @@ function main() {
   // Hot-path modes run on EVERY user prompt (session-check) / turn-end (Stop gate)
   // under a tight hook timeout and never read `git` — skip the 6 git subprocesses
   // getGitChanges() spawns. (Verified: these blocks contain no `git.` references.)
-  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report"]);
+  const GITLESS_MODES = new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report", "telemetry"]);
   const git: GitChanges = GITLESS_MODES.has(MODE)
     ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] }
     : getGitChanges();
@@ -2537,6 +2538,70 @@ Append-only chronological record of KB activity. Newest at top.
     const pointers = scored.map(x => `${x.d.path} — ${x.d.title}`);
     const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
     process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
+    return;
+  }
+
+  if (MODE === "telemetry") {
+    // Cross-repo usage telemetry (v5.x): compute a project summary LOCALLY (no network) that the
+    // session-start hook POSTs to the backend /check for keyed users. Emits ONLY a one-way project
+    // hash + integer counts — never code, file names, or doc content. The hook owns opt-out + the
+    // network send; this mode is pure local computation so it's testable in isolation.
+    //
+    // project_hash: sha256 hex of the git origin remote URL if present, else the absolute repo
+    // root path. One-way + anonymous — the backend can dedupe a project across sessions/machines
+    // (same remote → same hash) without ever learning the URL or path.
+    const originUrl = runGit(["config", "--get", "remote.origin.url"]).trim();
+    const hashInput = originUrl || path.resolve(ROOT);
+    const projectHash = crypto.createHash("sha256").update(hashInput).digest("hex");
+    const projectName = path.basename(path.resolve(ROOT));
+
+    // decisions/patterns — SAME source as --check/--health: counts of KB docs under
+    // docs/internal/{decisions,patterns} (detectState()).
+    const decisions = state.decisionCount;
+    const patterns = state.patternCount;
+
+    // health_score — SAME path as --health: parse health-score.sh's "HEALTH SCORE: N/100".
+    let healthScore: number | null = null;
+    const healthScript = resolveScript("health-score.sh");
+    if (healthScript) {
+      const raw = runFile("bash", [healthScript, ROOT], { timeout: 30000 });
+      const m = raw.match(/HEALTH SCORE:\s*(\d+)\/100/);
+      if (m) healthScore = parseInt(m[1], 10);
+    }
+
+    // recalls — current CALENDAR-MONTH recall count from the LOCAL usage log (same source as
+    // --report): sum of `count=N` across `recall kind=memory|kb` lines whose ISO-8601 UTC
+    // timestamp falls in the current YYYY-MM. Calendar month (not rolling 30d) so it reconciles
+    // with the backend ledger's current-month recall sum. Local read only.
+    let recalls = 0;
+    const logPath = process.env.JEEVES_USAGE_LOG || path.join(process.env.HOME || "", ".jeeves-usage.log");
+    if (exists(logPath)) {
+      const monthPrefix = new Date().toISOString().slice(0, 7); // "2026-07"
+      for (const ln of read(logPath).split("\n")) {
+        if (!/ recall kind=(memory|kb) /.test(ln)) continue;
+        const tsm = ln.match(/^(\S+) /);
+        if (!tsm || tsm[1].slice(0, 7) !== monthPrefix) continue;
+        const cm = ln.match(/count=(\d+)/);
+        recalls += cm ? parseInt(cm[1], 10) : 0;
+      }
+    }
+
+    const payload = {
+      project_hash: projectHash,
+      project_name: projectName,
+      health_score: healthScore,
+      decisions,
+      patterns,
+      recalls,
+    };
+    if (JSON_OUT) { process.stdout.write(JSON.stringify(payload)); return; }
+    console.log(`\n🤵 Jeeves — telemetry (local, not sent)\n`);
+    console.log(`  project_hash: ${projectHash}`);
+    console.log(`  project_name: ${projectName}`);
+    console.log(`  health_score: ${healthScore ?? "—"}`);
+    console.log(`  decisions:    ${decisions}`);
+    console.log(`  patterns:     ${patterns}`);
+    console.log(`  recalls (this month): ${recalls}\n`);
     return;
   }
 

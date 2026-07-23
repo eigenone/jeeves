@@ -10,19 +10,14 @@
 INPUT=$(cat 2>/dev/null)
 emit_empty() { echo '{}'; exit 0; }
 
-# Only re-inject on compact/resume. startup/clear are fresh sessions — session-check's
-# normal prompt-1 injection handles those (and re-injecting there would double up).
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
-case "$SOURCE" in compact|resume) ;; *) emit_empty ;; esac
 
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$(pwd)"
-# Nothing to re-inject unless Jeeves is active here (memory/, thinking/, or a code KB).
-[ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ] || emit_empty
 
 # Resolve the engine (same contract as session-check.sh: prefer the plugin copy over a stale
-# project-local one, and prebuilt .cjs over .ts). Needed ONLY for the memory READ payload —
-# both protocols are static strings — so a missing engine is NON-fatal here (leave JEEVES empty).
+# project-local one, and prebuilt .cjs over .ts). Needed for the memory READ payload AND the
+# telemetry step — both are best-effort, so a missing engine is NON-fatal (leave JEEVES empty).
 JEEVES=()
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs" ]; then
   JEEVES=(node "${CLAUDE_PLUGIN_ROOT}/scripts/jeeves.cjs")
@@ -33,6 +28,87 @@ elif [ -f "scripts/jeeves.cjs" ]; then
 elif [ -f "scripts/jeeves.ts" ]; then
   JEEVES=(npx tsx scripts/jeeves.ts)
 fi
+
+# ── Usage telemetry (once per session, keyed users only, DETACHED, fail-open) ──────────────
+# Default-ON for signed-in (keyed) users; HASHED + counts-only. Sends a project summary — a
+# one-way project hash + integer counts (health, decisions, patterns, recalls) — to the backend
+# /check, which upserts the projects table + logs an event (NO `skill` field → NOT billed). Never
+# sends code, file names, or doc content. Local/anonymous users send NOTHING. Runs on EVERY
+# session source (startup/clear/compact/resume) so a fresh session reports once; guarded by a
+# per-session marker. Fully independent of the memory re-injection below — any failure here MUST
+# NOT affect hook output (it never touches the emitted JSON).
+jeeves_telemetry() {
+  command -v jq   >/dev/null 2>&1 || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  [ ${#JEEVES[@]} -gt 0 ] || return 0
+  # Only for Jeeves-active repos (memory/, thinking/, or a code KB) — nothing to summarize otherwise.
+  [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ] || return 0
+
+  # Opt-out: env kill-switch OR ~/.jeeves/config tracking=anonymous → send NOTHING.
+  [ "${JEEVES_NO_TELEMETRY:-}" = "1" ] && return 0
+  TRACKING="hashed"
+  CONFIG="${HOME:-}/.jeeves/config"
+  if [ -n "${HOME:-}" ] && [ -f "$CONFIG" ]; then
+    _t=$(grep -E '^[[:space:]]*tracking[[:space:]]*=' "$CONFIG" 2>/dev/null | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')
+    case "$_t" in anonymous|hashed|named) TRACKING="$_t" ;; esac
+  fi
+  [ "$TRACKING" = "anonymous" ] && return 0
+
+  # A key is required to attribute usage (keyed users only). No key → send NOTHING.
+  KEY=""
+  for f in "${HOME:-}/.jeeves/key" "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key"; do
+    case "$f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
+    if [ -f "$f" ]; then KEY=$(tr -d ' \t\n\r' < "$f" 2>/dev/null); [ -n "$KEY" ] && break; fi
+  done
+  [ -z "$KEY" ] && return 0
+
+  # Once per session. SessionStart carries session_id; sanitize to a /tmp-safe marker.
+  SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 80)
+  [ -z "$SID" ] && SID="nosid"
+  MARKER="/tmp/jeeves-telemetry-${SID}"
+  [ -f "$MARKER" ] && return 0
+
+  # Compute the summary LOCALLY (no network). project_name is included ONLY when tracking=named.
+  T=$("${JEEVES[@]}" "$CWD" --telemetry --json 2>/dev/null)
+  printf '%s' "$T" | jq -e . >/dev/null 2>&1 || return 0
+  : > "$MARKER" 2>/dev/null || true   # latch even on send failure — one attempt per session
+
+  VERSION=""
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json" ]; then
+    VERSION=$(jq -r '.version // empty' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json" 2>/dev/null)
+  fi
+
+  # Build the /check payload. Omit `skill` so the event is NOT billed. Include project_name ONLY
+  # when tracking=named (default hashed → drop it). Counts are integers; never any content.
+  PAYLOAD=$(printf '%s' "$T" | jq -c \
+    --arg k "$KEY" --arg v "$VERSION" --arg tracking "$TRACKING" \
+    '{
+       key: $k,
+       project_hash: .project_hash,
+       stats: { health_score: .health_score, decisions: .decisions, patterns: .patterns, recalls: .recalls },
+       version: $v
+     }
+     + (if $tracking == "named" then { project_name: .project_name } else {} end)' 2>/dev/null) || return 0
+  [ -z "$PAYLOAD" ] && return 0
+
+  API="${JEEVES_API_URL:-https://server.draft0.ai}"
+  # Detached fire-and-forget — a slow/unreachable backend must never delay session start.
+  # Tests set JEEVES_CHECK_SYNC=1 to run foreground so the mock server can be asserted.
+  if [ "${JEEVES_CHECK_SYNC:-}" = "1" ]; then
+    curl -s --max-time 8 -X POST "$API/check" -H "Content-Type: application/json" -d "$PAYLOAD" >/dev/null 2>&1 || true
+  else
+    ( curl -s --max-time 8 -X POST "$API/check" -H "Content-Type: application/json" -d "$PAYLOAD" >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
+  fi
+}
+jeeves_telemetry 2>/dev/null || true
+
+# ── Memory re-injection (compact/resume only) ─────────────────────────────────────────────
+# Only re-inject on compact/resume. startup/clear are fresh sessions — session-check's
+# normal prompt-1 injection handles those (and re-injecting there would double up).
+case "$SOURCE" in compact|resume) ;; *) emit_empty ;; esac
+
+# Nothing to re-inject unless Jeeves is active here (memory/, thinking/, or a code KB).
+[ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ] || emit_empty
 
 # Both strings MUST stay byte-identical to their copies in session-check.sh — the capture
 # routing protocol compaction wiped, restored so capture continues. check-plugin-toolkit-sync.sh

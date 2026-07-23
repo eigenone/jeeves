@@ -24,6 +24,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // toolkit/scripts/jeeves.ts
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
+var crypto = __toESM(require("crypto"));
 var import_child_process = require("child_process");
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["--root", "--prompt", "--session", "--prompts", "--head-last", "--since", "--last-commit-prompt"]);
 var VALUE_POSITIONS = (() => {
@@ -42,7 +43,7 @@ var ROOT = (() => {
   }
   return process.cwd();
 })();
-var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report"];
+var MODES = ["init", "migrate", "handoff", "check", "stale", "health", "index", "annotate", "verify", "research", "save", "summary", "export", "reconcile", "driftcheck", "trace", "extract", "design", "archive", "thinking-candidate", "bootstrap-thinking", "capture-check", "memory-check", "kb-check", "report", "telemetry"];
 function hasFlag(name) {
   const tok = `--${name}`;
   for (let i = 2; i < process.argv.length; i++) {
@@ -826,7 +827,7 @@ ${actions.map((a) => `- [${a.priority}] ${a.type}: ${a.description}`).join("\n")
 }
 function main() {
   const state = detectState();
-  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report"]);
+  const GITLESS_MODES = /* @__PURE__ */ new Set(["capture-check", "thinking-candidate", "bootstrap-thinking", "kb-check", "memory-check", "report", "telemetry"]);
   const git = GITLESS_MODES.has(MODE) ? { lastDocCommit: "", lastDocDate: "", changedCodeFiles: [], newCodeFiles: [], deletedCodeFiles: [], recentCommitMessages: [] } : getGitChanges();
   if (MODE === "research") {
     const topic = process.argv.slice(process.argv.indexOf("--research") + 1).filter((a) => !a.startsWith("-")).join(" ") || "untitled";
@@ -1991,6 +1992,56 @@ ${idx}` : "",
     const pointers = scored.map((x) => `${x.d.path} \u2014 ${x.d.title}`);
     const inject = pointers.length ? `Relevant KB (read before working on this): ${pointers.join("; ")}` : "";
     process.stdout.write(JSON.stringify({ present: true, core, pointers, inject }));
+    return;
+  }
+  if (MODE === "telemetry") {
+    const originUrl = runGit(["config", "--get", "remote.origin.url"]).trim();
+    const hashInput = originUrl || path.resolve(ROOT);
+    const projectHash = crypto.createHash("sha256").update(hashInput).digest("hex");
+    const projectName = path.basename(path.resolve(ROOT));
+    const decisions = state.decisionCount;
+    const patterns = state.patternCount;
+    let healthScore = null;
+    const healthScript2 = resolveScript("health-score.sh");
+    if (healthScript2) {
+      const raw = runFile("bash", [healthScript2, ROOT], { timeout: 3e4 });
+      const m = raw.match(/HEALTH SCORE:\s*(\d+)\/100/);
+      if (m) healthScore = parseInt(m[1], 10);
+    }
+    let recalls = 0;
+    const logPath = process.env.JEEVES_USAGE_LOG || path.join(process.env.HOME || "", ".jeeves-usage.log");
+    if (exists(logPath)) {
+      const monthPrefix = (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+      for (const ln of read(logPath).split("\n")) {
+        if (!/ recall kind=(memory|kb) /.test(ln)) continue;
+        const tsm = ln.match(/^(\S+) /);
+        if (!tsm || tsm[1].slice(0, 7) !== monthPrefix) continue;
+        const cm = ln.match(/count=(\d+)/);
+        recalls += cm ? parseInt(cm[1], 10) : 0;
+      }
+    }
+    const payload = {
+      project_hash: projectHash,
+      project_name: projectName,
+      health_score: healthScore,
+      decisions,
+      patterns,
+      recalls
+    };
+    if (JSON_OUT) {
+      process.stdout.write(JSON.stringify(payload));
+      return;
+    }
+    console.log(`
+\u{1F935} Jeeves \u2014 telemetry (local, not sent)
+`);
+    console.log(`  project_hash: ${projectHash}`);
+    console.log(`  project_name: ${projectName}`);
+    console.log(`  health_score: ${healthScore ?? "\u2014"}`);
+    console.log(`  decisions:    ${decisions}`);
+    console.log(`  patterns:     ${patterns}`);
+    console.log(`  recalls (this month): ${recalls}
+`);
     return;
   }
   if (MODE === "report") {
