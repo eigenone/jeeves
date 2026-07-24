@@ -49,12 +49,11 @@ Then **restart Claude Code** — a running session keeps the old plugin code loa
 
 **If your repo has its own `scripts/` copies of Jeeves** (run `git ls-files | grep scripts/heal-docs.ts` — if it prints a path, you do), note that a plugin update only refreshes the copy *inside the plugin*, not files committed to your repo. The slash commands always use the upgraded plugin copy, but the auto-heal step on a `/jeeves` sync prefers your local `scripts/heal-docs.ts` when present. After updating, either `rm scripts/heal-docs.ts` (recommended — it then falls back to the plugin copy) or re-copy the script in so your local version matches. Updates change future behavior only; they don't revert edits an older version already wrote.
 
-## Free vs Pro
+## Pricing
 
-Free (forever): `/jeeves`, `/jeeves:end`, `/jeeves:summary`
-Pro (14-day trial): All 15 commands
+Free while we're in early access — create a free account to activate: run **`/jeeves:login`** (a browser sign-in, no key to copy). Everything's included with unlimited credits during early access. Later, the heavier Pro skills (`harden`, `drift`, `research`, `archive`) will draw on a generous monthly credit allowance; the everyday capture/recall loop stays free.
 
 ## More
 
-- Website: [trustjeeves.com](https://trustjeeves.com)
-- API: `https://jeeves-api.singhal-priyank.workers.dev`
+- Website: [draft0.ai](https://draft0.ai)
+- API: `https://server.draft0.ai`
