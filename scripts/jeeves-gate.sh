@@ -18,12 +18,9 @@ set -u
 
 emit() { printf '%s\n' "$1"; exit 0; }
 
-# 1. Resolve the key — project-local wins over global.
-KEY=""
-for f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
-  case "$f" in /.jeeves/key) continue ;; esac
-  if [ -f "$f" ]; then KEY=$(tr -d ' \t\n\r' < "$f" 2>/dev/null); [ -n "$KEY" ] && break; fi
-done
+# 1. Resolve the key via the shared resolver — walks to the git root so a repo-root key is
+#    found from any subfolder; project key wins over the global one.
+KEY=$(bash "$(dirname "$0")/jeeves-resolve-key.sh" 2>/dev/null | sed -n 2p)
 [ -z "$KEY" ] && emit "closed:no_key"
 
 # Without jq/curl we can't validate — fail OPEN (don't punish a broken toolchain).

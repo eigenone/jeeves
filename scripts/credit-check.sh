@@ -47,13 +47,9 @@ case "$GATE" in
 esac
 
 # ── METER (gate open) ───────────────────────────────────────────────────────────
-# Resolve the key (project-local wins over global) for attribution. The gate already
-# confirmed a usable key exists; this just re-reads it for the meter payload.
-KEY=""
-for f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
-  case "$f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
-  if [ -f "$f" ]; then KEY=$(tr -d ' \t\n\r' < "$f" 2>/dev/null); [ -n "$KEY" ] && break; fi
-done
+# Resolve the key via the shared resolver (same logic the gate used) for attribution —
+# the gate already confirmed a usable key exists; this re-reads it for the meter payload.
+KEY=$(bash "$(dirname "$0")/jeeves-resolve-key.sh" 2>/dev/null | sed -n 2p)
 [ -z "$KEY" ] && exit 0
 
 API="${JEEVES_API_URL:-https://server.draft0.ai}"

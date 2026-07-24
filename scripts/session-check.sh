@@ -53,16 +53,10 @@ fi
 # the authoritative online validation + hard block.
 PROJKEY_MSG=""
 if [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ]; then
-  _hk=""; _hk_src=""
-  _pf="${CLAUDE_PROJECT_DIR:-.}/.jeeves/key"
-  case "$_pf" in
-    /.jeeves/key) : ;;   # base var empty → skip
-    *) if [ -f "$_pf" ]; then _hk=$(tr -d ' \t\n\r' < "$_pf" 2>/dev/null); [ -n "$_hk" ] && _hk_src="project"; fi ;;
-  esac
-  if [ -z "$_hk" ] && [ -n "${HOME:-}" ] && [ -f "${HOME}/.jeeves/key" ]; then
-    _hk=$(tr -d ' \t\n\r' < "${HOME}/.jeeves/key" 2>/dev/null); [ -n "$_hk" ] && _hk_src="global"
-  fi
-  if [ -z "$_hk" ]; then
+  # Resolve via the shared resolver (walks to the git root, so a repo-root key is found even
+  # from a subfolder — no false "get a project key" nudge when one already exists upstream).
+  _hk_src=$(bash "$(dirname "$0")/jeeves-resolve-key.sh" "$CWD" 2>/dev/null | sed -n 1p)
+  if [ "$_hk_src" != "project" ] && [ "$_hk_src" != "global" ]; then
     _mark="/tmp/jeeves-nokey-${SAFE_ID}"
     [ -f "$_mark" ] && emit_empty
     : > "$_mark" 2>/dev/null || true

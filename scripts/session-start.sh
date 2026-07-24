@@ -112,15 +112,10 @@ case "$SOURCE" in compact|resume) ;; *) emit_empty ;; esac
 # Nothing to re-inject unless Jeeves is active here (memory/, thinking/, or a code KB).
 [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ] || emit_empty
 
-# Gate: Jeeves requires a valid account key. No key on disk → not activated, so skip memory
-# re-injection entirely (the UserPromptSubmit hook nudges the user to /jeeves:login next turn).
-# Key-presence check only; the skill hook does the authoritative online validation.
-_hk=""
-for _f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
-  case "$_f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
-  if [ -f "$_f" ]; then _hk=$(tr -d ' \t\n\r' < "$_f" 2>/dev/null); [ -n "$_hk" ] && break; fi
-done
-[ -z "$_hk" ] && emit_empty
+# Gate: Jeeves requires a valid account key. No key (walking to the git root, so a repo-root
+# key counts from a subfolder) → not activated, so skip memory re-injection (the UserPromptSubmit
+# hook nudges /jeeves:login next turn). Presence check only; the skill hook validates online.
+[ "$(bash "$(dirname "$0")/jeeves-resolve-key.sh" "$CWD" 2>/dev/null | sed -n 1p)" = "none" ] && emit_empty
 
 # Both strings MUST stay byte-identical to their copies in session-check.sh — the capture
 # routing protocol compaction wiped, restored so capture continues. check-plugin-toolkit-sync.sh
