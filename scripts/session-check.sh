@@ -45,17 +45,23 @@ else
   emit_empty
 fi
 
-# ── GATE: Jeeves requires a valid account key ──────────────────────────────────────────────
-# Without a key on disk, Jeeves' memory + capture are OFF. In a Jeeves-active repo, nudge the
-# user to activate (once per session, via a /tmp marker) and suppress the rest; in any other
-# repo stay silent. This is a key-PRESENCE check only (no network per prompt) — the skill hook
-# (credit-check.sh) does the authoritative online validation + hard block.
+# ── GATE + per-project nudge ───────────────────────────────────────────────────────────────
+# No key on disk → Jeeves' memory + capture are OFF: in a Jeeves-active repo, nudge the user to
+# activate (once/session via a /tmp marker) and suppress the rest; elsewhere stay silent. If a
+# key IS present but it's the GLOBAL one, suggest a per-repo key ONCE PER REPO (persistent
+# marker) for cleaner tracking. Key-PRESENCE only (no network per prompt) — the skill hook does
+# the authoritative online validation + hard block.
+PROJKEY_MSG=""
 if [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ]; then
-  _hk=""
-  for _f in "${CLAUDE_PROJECT_DIR:-.}/.jeeves/key" "${HOME:-}/.jeeves/key"; do
-    case "$_f" in /.jeeves/key) continue ;; esac   # skip when the base var was empty
-    if [ -f "$_f" ]; then _hk=$(tr -d ' \t\n\r' < "$_f" 2>/dev/null); [ -n "$_hk" ] && break; fi
-  done
+  _hk=""; _hk_src=""
+  _pf="${CLAUDE_PROJECT_DIR:-.}/.jeeves/key"
+  case "$_pf" in
+    /.jeeves/key) : ;;   # base var empty → skip
+    *) if [ -f "$_pf" ]; then _hk=$(tr -d ' \t\n\r' < "$_pf" 2>/dev/null); [ -n "$_hk" ] && _hk_src="project"; fi ;;
+  esac
+  if [ -z "$_hk" ] && [ -n "${HOME:-}" ] && [ -f "${HOME}/.jeeves/key" ]; then
+    _hk=$(tr -d ' \t\n\r' < "${HOME}/.jeeves/key" 2>/dev/null); [ -n "$_hk" ] && _hk_src="global"
+  fi
   if [ -z "$_hk" ]; then
     _mark="/tmp/jeeves-nokey-${SAFE_ID}"
     [ -f "$_mark" ] && emit_empty
@@ -64,6 +70,16 @@ if [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ]
     _out=$(printf '%s' "$_msg" | jq -Rsc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}' 2>/dev/null)
     [ -n "$_out" ] && { printf '%s\n' "$_out"; exit 0; }
     emit_empty
+  elif [ "$_hk_src" = "global" ]; then
+    _rk=$(printf '%s' "$CWD" | { shasum 2>/dev/null || sha1sum 2>/dev/null; } | cut -c1-16)
+    if [ -n "$_rk" ]; then
+      _pkmark="${HOME:-/tmp}/.jeeves/.pknudge-${_rk}"
+      if [ ! -f "$_pkmark" ]; then
+        mkdir -p "${HOME:-/tmp}/.jeeves" 2>/dev/null || true
+        : > "$_pkmark" 2>/dev/null || true
+        PROJKEY_MSG="Jeeves note — mention ONCE, casually, then drop it (do not nag or repeat): this repo runs on the user's global key. If they'd like this repo's usage tracked on its own, they can run /jeeves:activate <label> here to give it a dedicated key — extra keys are free and unlimited."
+      fi
+    fi
   fi
 fi
 
@@ -302,6 +318,8 @@ _STATE_TMP="${STATE}.tmp.$$"
 # own even in code-mode projects (where CTX is empty).
 FULL_CTX="$CTX"
 [ -n "$REGISTRATION_MSG" ] && FULL_CTX="${REGISTRATION_MSG}${CTX:+ }${CTX}"
+# Soft per-project-key suggestion (once per repo; set in the gate block above).
+[ -n "$PROJKEY_MSG" ] && FULL_CTX="${PROJKEY_MSG}${FULL_CTX:+ }${FULL_CTX}"
 # Memory rides ahead of thinking-mode context (durable behavioral guidance applies to
 # every mode), but behind the version warning. The capture PROTOCOL (write path) leads the
 # memory READ payload so the "capture as you go" instruction is seen first.
