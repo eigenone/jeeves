@@ -17,17 +17,21 @@ fi
 
 case "$ARG" in
   jvs_*)
-    # Legacy/manual: store a key the user already has as the global key.
-    mkdir -p "${HOME}/.jeeves" && printf '%s' "$ARG" > "${HOME}/.jeeves/key" && chmod 600 "${HOME}/.jeeves/key" 2>/dev/null || true
-    rm -f "${HOME}/.jeeves/validation" 2>/dev/null || true   # force a fresh validation
+    # Legacy/manual: store a key the user already has as the global key — but VALIDATE FIRST
+    # so an invalid/expired key is never persisted (a stale bad key would just get gate-blocked).
     if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
       V=$(curl -s --max-time 8 -X POST "$API/validate" -H "Content-Type: application/json" -d "$(jq -cn --arg k "$ARG" '{key:$k}')" 2>/dev/null)
-      if [ "$(printf '%s' "$V" | jq -r '.valid // false' 2>/dev/null)" = "true" ]; then
-        echo "✓ Jeeves activated (global key stored). Try /jeeves:report."
-      else
+      if [ "$(printf '%s' "$V" | jq -r '.valid // false' 2>/dev/null)" != "true" ]; then
         echo "That key isn't valid or has expired. Get set up with /jeeves:login instead (no key to paste)."
+        exit 0
       fi
+      mkdir -p "${HOME}/.jeeves" && printf '%s' "$ARG" > "${HOME}/.jeeves/key" && chmod 600 "${HOME}/.jeeves/key" 2>/dev/null || true
+      rm -f "${HOME}/.jeeves/validation" 2>/dev/null || true   # force a fresh validation next gate
+      echo "✓ Jeeves activated (global key stored). Try /jeeves:report."
     else
+      # Can't verify offline — store it and let the gate validate later.
+      mkdir -p "${HOME}/.jeeves" && printf '%s' "$ARG" > "${HOME}/.jeeves/key" && chmod 600 "${HOME}/.jeeves/key" 2>/dev/null || true
+      rm -f "${HOME}/.jeeves/validation" 2>/dev/null || true
       echo "Key stored. Install jq + curl so Jeeves can verify and meter usage."
     fi
     ;;

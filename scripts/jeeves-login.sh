@@ -34,6 +34,7 @@ fi
 
 case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=3 ;; esac
 case "$EXPIRES"  in ''|*[!0-9]*) EXPIRES=600 ;; esac
+[ "$INTERVAL" -lt 1 ] && INTERVAL=1   # floor: a server-sent interval:0 would never advance WAITED → infinite poll
 WAITED=0
 while [ "$WAITED" -lt "$EXPIRES" ]; do
   sleep "$INTERVAL"; WAITED=$(( WAITED + INTERVAL ))
