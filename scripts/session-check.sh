@@ -55,12 +55,36 @@ PROJKEY_MSG=""
 if [ -d "$CWD/memory" ] || [ -d "$CWD/thinking" ] || [ -d "$CWD/docs/internal" ]; then
   # Resolve via the shared resolver (walks to the git root, so a repo-root key is found even
   # from a subfolder — no false "get a project key" nudge when one already exists upstream).
-  _hk_src=$(bash "$(dirname "$0")/jeeves-resolve-key.sh" "$CWD" 2>/dev/null | sed -n 1p)
+  _R=$(bash "$(dirname "$0")/jeeves-resolve-key.sh" "$CWD" 2>/dev/null)
+  _hk_src=$(printf '%s\n' "$_R" | sed -n 1p)
+  _hk=$(printf '%s\n' "$_R" | sed -n 2p)
+  # Is the resolved key KNOWN-invalid? The skill gate caches a confirmed-invalid verdict at
+  # ~/.jeeves/validation (e.g. the account was reset or the key revoked). Surface that at
+  # session start instead of silently running with a dead key. Cheap cache read, no network.
+  _invalid=0
+  if [ -n "$_hk" ] && [ -f "${HOME:-}/.jeeves/validation" ]; then
+    _kh=$(printf '%s' "$_hk" | { shasum -a 256 2>/dev/null || sha256sum 2>/dev/null; } | cut -d' ' -f1)
+    _cv=$(cat "${HOME}/.jeeves/validation" 2>/dev/null)
+    # NB: read `.valid` RAW — `.valid // true` would wrongly yield "true" for a false value
+    # (jq's // treats false as empty). Absent field → "null" → not treated as invalid.
+    if [ "$(printf '%s' "$_cv" | jq -r '.key_hash // empty' 2>/dev/null)" = "$_kh" ] && \
+       [ "$(printf '%s' "$_cv" | jq -r '.valid' 2>/dev/null)" = "false" ]; then
+      _invalid=1
+    fi
+  fi
   if [ "$_hk_src" != "project" ] && [ "$_hk_src" != "global" ]; then
     _mark="/tmp/jeeves-nokey-${SAFE_ID}"
     [ -f "$_mark" ] && emit_empty
     : > "$_mark" 2>/dev/null || true
     _msg='Jeeves is installed here but not activated — it needs a free account to run, so its memory and capture are OFF. Tell the user (once): run /jeeves:login to activate — one command, it opens the browser, nothing to copy.'
+    _out=$(printf '%s' "$_msg" | jq -Rsc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}' 2>/dev/null)
+    [ -n "$_out" ] && { printf '%s\n' "$_out"; exit 0; }
+    emit_empty
+  elif [ "$_invalid" = "1" ]; then
+    _mark="/tmp/jeeves-badkey-${SAFE_ID}"
+    [ -f "$_mark" ] && emit_empty
+    : > "$_mark" 2>/dev/null || true
+    _msg='Jeeves key is no longer valid — the account may have been reset or the key revoked, so memory and capture are OFF. Tell the user (once): run /jeeves:login to re-activate.'
     _out=$(printf '%s' "$_msg" | jq -Rsc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}' 2>/dev/null)
     [ -n "$_out" ] && { printf '%s\n' "$_out"; exit 0; }
     emit_empty
