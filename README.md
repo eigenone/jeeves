@@ -2,7 +2,7 @@
 
 **Your AI doesn't remember. Jeeves does.**
 
-Session memory and living documentation for Claude Code.
+Session memory and living documentation for Claude Code — Jeeves captures your decisions and keeps your docs in sync with the code, so context survives across sessions.
 
 ## Install
 
@@ -11,33 +11,33 @@ Session memory and living documentation for Claude Code.
 /plugin install jeeves@eigenone-jeeves
 ```
 
-Then reload: `/reload-plugins`
+Then **restart Claude Code** so the plugin loads.
 
 ## Setup
 
-1. Sign up: `curl -X POST https://jeeves-api.singhal-priyank.workers.dev/signup -H "Content-Type: application/json" -d '{"email":"you@example.com","persona":"builder"}'`
-2. Set your key: `export JEEVES_KEY=jvs_your_key_here` (add to .zshrc)
-3. Start a session — Jeeves loads your context automatically
+Jeeves needs a free account. Activating takes one command — no key to copy or paste.
+
+1. Run **`/jeeves:login`** in Claude Code. It opens your browser, you approve, and Jeeves writes your key for you. One login covers every repo on the machine.
+2. Start working. Jeeves loads your context automatically; run **`/jeeves:init`** the first time in a repo that has no knowledge base yet.
+
+Working on a headless/CI machine, or want a repo tracked separately? Use **`/jeeves:activate <label>`** to create and store a key without the browser flow.
 
 ## Commands
 
 | Command | What it does |
 |---------|-------------|
-| `/jeeves` | Sync docs with code — heal paths, rebuild index, report health |
-| `/jeeves:end` | End session — capture decisions, write handoff |
-| `/jeeves:summary` | Everything decided across all sessions |
-| `/jeeves:harden` | Quality suite — annotate code, verify comments, lint |
-| `/jeeves:research` | Web research, save findings |
-| `/jeeves:export` | Shareable doc for your team |
-| `/jeeves:trace` | End-to-end feature flow |
-| `/jeeves:design` | Plan what docs to create |
-| `/jeeves:reconcile` | Check docs for drift |
-| `/jeeves:driftcheck` | Compare specs vs actual code |
-| `/jeeves:annotate` | Add WHY comments to code |
-| `/jeeves:verify` | Check comment accuracy |
-| `/jeeves:save` | Save artifacts (drafts, plans) |
-| `/jeeves:archive` | Stash thinking, start fresh |
-| `/jeeves:extract` | File back knowledge from conversation |
+| `/jeeves:login` | Activate this machine via a browser sign-in (no key to copy) |
+| `/jeeves:activate` | Activate with an API key, or mint a per-project key for this repo |
+| `/jeeves:init` | Scaffold Jeeves in a repo that has no knowledge base yet |
+| `/jeeves` | Sync docs with code — heal broken paths, rebuild the concept index, report health |
+| `/jeeves:end` | End a session — capture decisions, write a handoff with next steps |
+| `/jeeves:memory` | Add, curate, or prune the project memory layer (durable prefs, feedback, references) |
+| `/jeeves:report` | Your value ledger — how much durable knowledge Jeeves has surfaced for you |
+| `/jeeves:harden` | Quality suite — annotate code, verify comments, lint docs, heal paths, health score |
+| `/jeeves:drift` | Detect drift — stale doc references, and spec/plan vs. what was actually built |
+| `/jeeves:research` | Web research on a topic, findings saved into your knowledge base |
+| `/jeeves:archive` | Stash current thinking and start fresh |
+| `/jeeves:migrate` | Heal a repo after a Jeeves upgrade (repairs the memory schema) |
 
 ## Updating
 
@@ -45,13 +45,11 @@ Then reload: `/reload-plugins`
 /plugin update jeeves@eigenone-jeeves
 ```
 
-Then **restart Claude Code** — a running session keeps the old plugin code loaded until it reloads. Jeeves prints a one-line warning when the version on disk is newer than the session loaded.
-
-**If your repo has its own `scripts/` copies of Jeeves** (run `git ls-files | grep scripts/heal-docs.ts` — if it prints a path, you do), note that a plugin update only refreshes the copy *inside the plugin*, not files committed to your repo. The slash commands always use the upgraded plugin copy, but the auto-heal step on a `/jeeves` sync prefers your local `scripts/heal-docs.ts` when present. After updating, either `rm scripts/heal-docs.ts` (recommended — it then falls back to the plugin copy) or re-copy the script in so your local version matches. Updates change future behavior only; they don't revert edits an older version already wrote.
+Then **restart Claude Code** — a running session keeps the old plugin code loaded until it reloads. Jeeves prints a one-line notice when the version on disk is newer than the one the session loaded.
 
 ## Pricing
 
-Free while we're in early access — create a free account to activate: run **`/jeeves:login`** (a browser sign-in, no key to copy). Everything's included with unlimited credits during early access. Later, the heavier Pro skills (`harden`, `drift`, `research`, `archive`) will draw on a generous monthly credit allowance; the everyday capture/recall loop stays free.
+Free while we're in early access — everything's included with unlimited usage. Just run **`/jeeves:login`** to create a free account and activate. Later, the heavier Pro skills (`harden`, `drift`, `research`, `archive`) will draw on a generous monthly allowance; the everyday capture-and-recall loop stays free.
 
 ## More
 
