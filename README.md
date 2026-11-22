@@ -8,7 +8,7 @@ Session memory and living documentation for Claude Code — Jeeves captures your
 
 ```
 /plugin marketplace add eigenone/jeeves
-/plugin install jeeves@eigenone-jeeves
+/plugin install jeeves@jeeves
 ```
 
 Then **restart Claude Code** so the plugin loads.
@@ -42,7 +42,7 @@ Working on a headless/CI machine, or want a repo tracked separately? Use **`/jee
 ## Updating
 
 ```
-/plugin update jeeves@eigenone-jeeves
+/plugin update jeeves@jeeves
 ```
 
 Then **restart Claude Code** — a running session keeps the old plugin code loaded until it reloads. Jeeves prints a one-line notice when the version on disk is newer than the one the session loaded.
